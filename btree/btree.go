@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"bytes"
 	"dbms/util"
 	"encoding/binary"
 	"log"
@@ -141,4 +142,92 @@ func (b BNode) getVal(idx uint16) []byte {
 
 func (b BNode) nbytes() uint16 {
 	return b.kvPos(b.nkeys())
+}
+
+// returns the first key node whose range intersects the key. (kid[i] <= key)
+// LE = less then or equal to operator
+func nodeLookupLE(node BNode, key []byte) uint16 {
+	nkeys := node.nkeys()
+	found := uint16(0)
+
+	// first key in the node is always less then or equal to the search key
+	// because first key is the smallest in a B+Tree Node
+	for i := uint16(1); i < nkeys; i++ {
+		k := node.getKey(i)
+		cmp := bytes.Compare(key, k)
+		if cmp <= 0 {
+			found = i
+		}
+		if cmp > 0 {
+			break
+		}
+	}
+	return found
+}
+
+// leaf insert function inserts key and value at a given index
+func leafInsert(new BNode, old BNode, idx uint16, key, val []byte) {
+	// increment number of key count in header
+	new.setHeader(BNODE_LEAF, old.nkeys()+1)
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, 0, key, val)
+	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
+}
+
+// nodeAppendRange copies kv pairs from old BNode to new BNode
+// dstNew starting index in new BNode
+// srcOld starting index in old BNode
+// n is number of kv pairs to be copied from old to new BNode
+// starting from the indexes
+func nodeAppendRange(
+	new BNode, old BNode,
+	dstNew uint16, srcOld uint16, n uint16,
+) {
+	// check if the number of node are within the range
+	if dstNew+n > new.nkeys() {
+		log.Fatalf("out of bounds, idx: %d, nkeys: %d", dstNew+n, new.nkeys())
+	}
+	if srcOld+n > old.nkeys() {
+		log.Fatalf("out of bounds, idx: %d, nkeys: %d", srcOld+n, old.nkeys())
+	}
+
+	if n == 0 {
+		return
+	}
+	// copy pointer from src to dst
+	// src, starts from index srcOld
+	// dst, starts from index dstNew
+	for i := uint16(0); i < n; i++ {
+		new.setptr(dstNew+i, uint64(old.getptr(srcOld+i)))
+	}
+
+	// set offsets for new pointer
+	dstBegin := new.getOffset(dstNew)
+	srcBegin := old.getOffset(srcOld)
+	for i := uint16(1); i <= n; i++ {
+		relOffset := old.getOffset(srcOld+i) - srcBegin
+		offset := dstBegin + relOffset
+		new.setOffset(dstNew+i, offset)
+	}
+
+	begin := old.getOffset(srcOld)
+	end := old.getOffset(srcOld + n)
+	copy(new[new.getOffset(dstNew):], old[begin:end])
+}
+
+func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
+	// set ptr
+	new.setptr(idx, ptr)
+
+	// set kv
+	pos := new.kvPos(idx)
+	// set kv headers
+	binary.LittleEndian.PutUint16(new[pos+0:], uint16(len(key)))
+	binary.LittleEndian.PutUint16(new[pos+2:], uint16(len(val)))
+	// set kv data
+	copy(new[pos+4:], key)
+	copy(new[pos+4+uint16(len(key)):], val)
+
+	// set offset off next key
+	new.setOffset(idx+1, new.getOffset(idx)+4+uint16(len(key)+len(val)))
 }
