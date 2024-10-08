@@ -2,7 +2,6 @@ package btree
 
 import (
 	"bytes"
-	"dbms/util"
 	"encoding/binary"
 	"log"
 )
@@ -23,7 +22,8 @@ const (
 	BNODE_LEAF = 2
 )
 
-// the data is written and read in littleEndian format
+// format used to store bytes is 	LITTLE ENDIAN
+
 type BNode []byte
 
 type BTree struct {
@@ -33,12 +33,15 @@ type BTree struct {
 	del  func(uint64)        // allocate87 a page
 }
 
+// checks if max node size can fit into a page
 func init() {
 	// size of largest possible node
 	node1max := HEADER + POINTER + OFFSET + (KVHEADER + MAXKEYLEN + MAXVALLEN)
 
 	// check if the max node fits in a page
-	util.Assert(node1max <= PAGE_SIZE)
+	if node1max > PAGE_SIZE {
+		log.Fatalln("size of node exceeds the size of page")
+	}
 }
 
 // functions to decode node formats
@@ -47,16 +50,20 @@ func (b BNode) btype() uint16 {
 	return binary.LittleEndian.Uint16(b[0:2])
 }
 
+// nkeys returns number of keys in the node
 func (b BNode) nkeys() uint16 {
 	return binary.LittleEndian.Uint16(b[2:4])
 }
 
+// setHeader sets the header(btype, nkeys) to given values
 func (b BNode) setHeader(btype, nkeys uint16) {
 	binary.LittleEndian.PutUint16(b[0:2], btype)
 	binary.LittleEndian.PutUint16(b[2:4], nkeys)
 }
 
 // handle child pointers
+
+// getptr returns pointer to node at a given index
 func (b BNode) getptr(idx uint16) uint64 {
 	if idx >= b.nkeys() {
 		log.Fatalf("out of bounds, index: %d, nkeys: %d", idx, b.nkeys())
@@ -65,6 +72,7 @@ func (b BNode) getptr(idx uint16) uint64 {
 	return binary.LittleEndian.Uint64(b[sbyte:])
 }
 
+// setptr set the poiter at a given index to the specified value
 func (b BNode) setptr(idx uint16, ptr uint64) {
 	if idx >= b.nkeys() {
 		log.Fatalf("out of bounds, index: %d, nkeys: %d", idx, b.nkeys())
@@ -83,8 +91,9 @@ func (b BNode) setptr(idx uint16, ptr uint64) {
 // and so on
 
 // offsets are stored back to back as an array
-// offsetPos function returns offset at a given index
-// offsetPos(idx) is same as offsets[idx]
+// offset are structured in such a way that offset[idx] gives
+// offest of KV-Pair [idx+1]
+// offsetPos function returns the position of the offset with in the node
 func (b BNode) offsetPos(idx uint16) uint16 {
 	if idx > b.nkeys() {
 		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
@@ -106,7 +115,7 @@ func (b BNode) setOffset(idx uint16, val uint16) {
 	if idx > b.nkeys() {
 		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
 	}
-	sbyte := b.getOffset(idx)
+	sbyte := b.offsetPos(idx)
 	binary.LittleEndian.PutUint16(b[sbyte:], val)
 }
 
@@ -118,7 +127,6 @@ func (b BNode) kvPos(idx uint16) uint16 {
 	offset := b.getOffset(idx)
 	sbyte := offset + HEADER + (b.nkeys() * POINTER) + (b.nkeys() * OFFSET)
 	//  	 ^offset relative to the first kv pair
-	// 				 ^ index of first kv pair in node
 	return sbyte
 }
 
@@ -128,7 +136,7 @@ func (b BNode) getKey(idx uint16) []byte {
 	}
 	kvpos := b.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(b[kvpos:])
-	kpos := KVHEADER + klen
+	kpos := KVHEADER + kvpos
 	// b[kpos:][:klen] same as b[kpos:(kpos + klen)]
 	return b[kpos:][:klen]
 }
@@ -140,7 +148,7 @@ func (b BNode) getVal(idx uint16) []byte {
 	kvpos := b.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(b[kvpos:])
 	vlen := binary.LittleEndian.Uint16(b[kvpos+KLEN:])
-	vpos := KVHEADER + klen
+	vpos := kvpos + KVHEADER + klen
 	return b[vpos:][:vlen]
 }
 
@@ -170,7 +178,7 @@ func nodeLookupLE(node BNode, key []byte) uint16 {
 }
 
 // leaf insert function inserts key and value at a given index
-// it just update the new BNode with all the values of the old Node
+// it will just update the new BNode with all the values of the old Node
 // along with a new kv pair inserted at a given location
 func leafInsert(new BNode, old BNode, idx uint16, key, val []byte) {
 	// increment number of key count in header
@@ -189,7 +197,7 @@ func leafUpdate(new BNode, old BNode, idx uint16, key, val []byte) {
 	nodeAppendKV(new, idx, 0, key, val)
 
 	// copy from index + 1 till end
-	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-idx+1)
+	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-(idx+1))
 }
 
 // nodeAppendRange copies kv pairs from old BNode to new BNode
@@ -278,9 +286,10 @@ func nodeReplaceKidN(
 		nodeAppendKV(new, idx+uint16(i), tree.new(node), node.getKey(0), nil)
 	}
 	// append kv's from index + 1 to all of the indexes
-	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-idx+1)
+	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-(idx+1))
 }
 
+// nodeReplace2Kid replaces pointers to 2 nodes with a merged pointers
 func nodeReplace2Kid(
 	new BNode, old BNode, idx uint16,
 	mergedPtr uint64, key []byte,
@@ -294,13 +303,13 @@ func nodeReplace2Kid(
 	nodeAppendKV(new, idx, mergedPtr, key, nil)
 
 	// copy remaining kv's
-	nodeAppendRange(new, old, idx+1, idx+2, old.nkeys()-idx-2)
+	nodeAppendRange(new, old, idx+1, idx+2, old.nkeys()-(idx+2))
 	//                               ^skip the merged node
 }
 
 // split a oversized node into 2 so that the 2nd node always fits on a page
 func nodeSplit2(left BNode, right BNode, old BNode) {
-	// code omitted...
+
 }
 
 // split a node if it's too big. the results are 1~3 nodes.
@@ -416,6 +425,7 @@ func (t *BTree) Insert(key, val []byte) {
 // updated refers to the updated BNode
 // node refers to the parent node of updated BNode
 // idx refers to the index of the updated node in the parent node
+// 0 -> no need to merge, -1 -> merge with left sibiling, 1 -> merge with right sibiling
 func shouldMerge(
 	tree *BTree, node BNode,
 	idx uint16, updated BNode,
@@ -452,6 +462,7 @@ func shouldMerge(
 	return 0, BNode{}
 }
 
+// nodeMerge merges left and right node into new node
 func nodeMerge(new, left, right BNode) {
 	new.setHeader(left.btype(), left.nkeys()+right.nkeys())
 
@@ -460,6 +471,27 @@ func nodeMerge(new, left, right BNode) {
 
 	// append right node to new node
 	nodeAppendRange(new, right, left.nkeys(), 0, right.nkeys())
+}
+
+func treeDelete(tree *BTree, node BNode, key []byte) BNode {
+	// check where to delete
+	idx := nodeLookupLE(node, key)
+
+	switch node.btype() {
+	case BNODE_LEAF:
+		// key not found
+		if !bytes.Equal(key, node.getKey(idx)) {
+			return BNode{}
+		}
+		new := BNode(make([]byte, PAGE_SIZE))
+		leafDelete(new, node, idx)
+		return new
+	case BNODE_NODE:
+		return nodeDelete(tree, node, idx, key)
+	default:
+		log.Panicln("invalid node header(bad node)!")
+	}
+	return BNode{}
 }
 
 func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
@@ -500,31 +532,11 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 		if node.nkeys() == 1 && idx == 0 {
 			new.setHeader(BNODE_NODE, 0)
 		}
+
 	case mergeDir == 0 && updated.nkeys() > 0:
 		nodeReplaceKidN(tree, new, node, idx, updated)
 	}
 	return new
-}
-
-func treeDelete(tree *BTree, node BNode, key []byte) BNode {
-	// check where to delete
-	idx := nodeLookupLE(node, key)
-
-	switch node.btype() {
-	case BNODE_LEAF:
-		// key not found
-		if !bytes.Equal(key, node.getKey(idx)) {
-			return BNode{}
-		}
-		new := BNode(make([]byte, PAGE_SIZE))
-		leafDelete(new, node, idx)
-		return new
-	case BNODE_NODE:
-		return nodeDelete(tree, node, idx, key)
-	default:
-		log.Panicln("invalid node header(bad node)!")
-	}
-	return BNode{}
 }
 
 func leafDelete(new BNode, old BNode, idx uint16) {
