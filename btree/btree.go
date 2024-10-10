@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log"
+	"math"
 )
 
 const (
@@ -75,7 +76,7 @@ func (b BNode) getptr(idx uint16) uint64 {
 // setptr set the poiter at a given index to the specified value
 func (b BNode) setptr(idx uint16, ptr uint64) {
 	if idx >= b.nkeys() {
-		log.Fatalf("out of bounds, index: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("set pointer out of bounds , index: %d, nkeys: %d", idx, b.nkeys())
 	}
 	sbyte := HEADER + (idx * 8)
 	binary.LittleEndian.PutUint64(b[sbyte:], ptr)
@@ -113,7 +114,7 @@ func (b BNode) getOffset(idx uint16) uint16 {
 
 func (b BNode) setOffset(idx uint16, val uint16) {
 	if idx > b.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("out of bounds setting offset, idx: %d, nkeys: %d", idx, b.nkeys())
 	}
 	sbyte := b.offsetPos(idx)
 	binary.LittleEndian.PutUint16(b[sbyte:], val)
@@ -122,7 +123,7 @@ func (b BNode) setOffset(idx uint16, val uint16) {
 // kvPos returns starting index of the kv pair in node
 func (b BNode) kvPos(idx uint16) uint16 {
 	if idx > b.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("out of bounds kvpos, idx: %d, nkeys: %d", idx, b.nkeys())
 	}
 	offset := b.getOffset(idx)
 	sbyte := offset + HEADER + (b.nkeys() * POINTER) + (b.nkeys() * OFFSET)
@@ -213,10 +214,10 @@ func nodeAppendRange(
 ) {
 	// check if the number of node are within the range
 	if dstNew+n > new.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", dstNew+n, new.nkeys())
+		log.Fatalf("out of bounds new node, idx: %d, nkeys: %d", dstNew+n, new.nkeys())
 	}
 	if srcOld+n > old.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", srcOld+n, old.nkeys())
+		log.Fatalf("out of bounds old node, idx: %d, nkeys: %d", srcOld+n, old.nkeys())
 	}
 
 	if n == 0 {
@@ -238,19 +239,61 @@ func nodeAppendRange(
 		new.setOffset(dstNew+i, offset)
 	}
 
-	begin := old.getOffset(srcOld)
-	end := old.getOffset(srcOld + n)
-	copy(new[new.getOffset(dstNew):], old[begin:end])
+	oldOffset := HEADER + POINTER*old.nkeys() + OFFSET*old.nkeys()
+	begin := old.getOffset(srcOld) + oldOffset
+	end := old.getOffset(srcOld+n) + oldOffset
+	newBegin := new.getOffset(dstNew) + HEADER + POINTER*new.nkeys() + OFFSET*new.nkeys()
+	copy(new[newBegin:], old[begin:end])
 }
 
-// nodeAppendKV adds a new kv pair to the node at a given index
+// nodeInsertDynamic inserts new key value pair at the given index
+// along with modifying the pointers, offsets and header
+func nodeInsertDynamic(new BNode, idx uint16, ptr uint64, key, val []byte) {
+
+	// create a temp node to store data
+	var temp BNode
+	size := math.Ceil(float64(new.nbytes() / PAGE_SIZE))
+	temp = make([]byte, PAGE_SIZE*int(size))
+
+	// check if kv-pairs fits in the page
+	newSize := new.nbytes() + uint16(POINTER+OFFSET+KVHEADER+len(key)+len(val))
+	if newSize > uint16(PAGE_SIZE*int(size)) {
+		log.Fatalln("node is full")
+	}
+
+	copy(temp, new)
+
+	// set header
+	new.setHeader(temp.btype(), temp.nkeys()+1)
+
+	// copy pointers upto index
+	for i := uint16(0); i < idx; i++ {
+		ptr := temp.getptr(i)
+		new.setptr(i, ptr)
+	}
+	new.setptr(idx, ptr)
+	for i := uint16(idx); i < temp.nkeys(); i++ {
+		ptr := temp.getptr(i)
+		new.setptr(i+1, ptr)
+	}
+
+	// copy offsets into the new node
+	// kvposPtr := HEADER + new.nkeys()*POINTER + new.nkeys()*OFFSET
+	// spostemp := HEADER + temp.nkeys()*POINTER
+	// for i := uint16(0); i < idx; i++ {
+	// 	// length of kv pair
+	// 	reloffset := temp.getOffset(i) - temp.getOffset(i-1)
+	// }
+}
+
+// nodeAppendKV adds a new kv pair to the node at a given index,
+// it does not incerease the nkeys of new node by one
 func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	// set ptr
 	new.setptr(idx, ptr)
 
 	// set kv
 	pos := new.kvPos(idx)
-
 	// set kv headers
 	binary.LittleEndian.PutUint16(new[pos+0:], uint16(len(key)))
 	binary.LittleEndian.PutUint16(new[pos+2:], uint16(len(val)))
@@ -266,6 +309,7 @@ func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 // nodeReplaceKidN copies the keys that are in old internal node to
 // new internal node along with appending keys to the new child nodes
 // at a given index
+// this function should be used with internodes
 // here the value will be nil as the values will be stored in only leaf nodes
 // here the while creating a new node can lead to spliting
 // so we use multiple nodes(kids)
@@ -309,7 +353,22 @@ func nodeReplace2Kid(
 
 // split a oversized node into 2 so that the 2nd node always fits on a page
 func nodeSplit2(left BNode, right BNode, old BNode) {
-
+	// split the node into half
+	if old.nbytes() <= PAGE_SIZE*2 {
+		idx := uint16(0)
+		for old.kvPos(idx) <= PAGE_SIZE {
+			idx++
+		}
+		nodeAppendRange(left, old, 0, 0, idx)
+		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+	} else {
+		idx := uint16(0)
+		for old.kvPos(idx) <= 2*PAGE_SIZE {
+			idx++
+		}
+		nodeAppendRange(left, old, 0, 0, idx)
+		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+	}
 }
 
 // split a node if it's too big. the results are 1~3 nodes.

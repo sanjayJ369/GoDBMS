@@ -2,6 +2,7 @@ package btree
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"testing"
 	"unsafe"
@@ -72,7 +73,7 @@ func newC() *C {
 // | length of key(2) | length of value(2) | key (x) | val(y) |
 // size of key and value may vary so the number of bytes required to then is a variable
 
-func TestBNode(t *testing.T) {
+func TestBNodeHelperFuncs(t *testing.T) {
 
 	t.Run("btype returns the type of the node as per the header", func(t *testing.T) {
 		want := BNODE_LEAF
@@ -142,7 +143,9 @@ func TestBNode(t *testing.T) {
 		b.setHeader(BNODE_NODE, 5)
 		want := uint16(1256)
 		b.setOffset(3, want)
-		assert.Equal(t, want, b.getOffset(3), "setting offset")
+		b.setOffset(0, want)
+		assert.Equal(t, want, b.getOffset(3), "setting offset 3")
+		assert.Equal(t, uint16(0), b.getOffset(0), "setting offset 0")
 	})
 
 	t.Run("kvPos returns kv-pair offset from starting of node", func(t *testing.T) {
@@ -204,4 +207,129 @@ func getKVpair(key, val []byte) []byte {
 	copy(kv[KVHEADER:], key)
 	copy(kv[KVHEADER+len(key):], val)
 	return kv
+}
+
+func getStubInternalNode(size int,
+	kvparis [][]byte, pointers []uint64) BNode {
+
+	var stubNode BNode = make([]byte, size)
+	stubNode.setHeader(BNODE_NODE, uint16(len(kvparis)))
+
+	// set pointers if it's internal node
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		stubNode.setptr(i, pointers[i])
+	}
+
+	// set offsets
+	acc := uint16(0)
+	for i := uint16(1); i <= stubNode.nkeys(); i++ {
+		acc += uint16(len(kvparis[i-1]))
+		stubNode.setOffset(i, acc)
+	}
+
+	// set kv pairs
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		spos := stubNode.kvPos(i)
+		copy(stubNode[spos:], kvparis[i])
+	}
+	return stubNode
+}
+
+func TestBNodeManipulationFuncs(t *testing.T) {
+	// create a stub key
+	kvpairs := make([][]byte, 0)
+	for i := 0; i < 4; i++ {
+		k := []byte(fmt.Sprintf("this is key%d", i))
+		v := []byte(fmt.Sprintf("this is val%d", i))
+		kvp := getKVpair(k, v)
+		kvpairs = append(kvpairs, kvp)
+	}
+	stubNode := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
+
+	t.Run("nodeLookupLE returns the first key <= given key", func(t *testing.T) {
+
+		got := nodeLookupLE(stubNode, []byte("this is key3"))
+		assert.Equal(t, uint16(0), got, "node lookup less then")
+	})
+
+	t.Run("nodeAppendRange copies kvpairs from old to new node upto given index", func(t *testing.T) {
+		var newNode BNode = make([]byte, PAGE_SIZE)
+		idx := 2
+		newNode.setHeader(BNODE_NODE, stubNode.nkeys())
+
+		nodeAppendRange(newNode, stubNode, 0, 0, uint16(idx))
+
+		// check header
+		assert.Equal(t, stubNode.btype(), newNode.btype(), "comparing node type")
+		assert.Equal(t, stubNode.nkeys(), newNode.nkeys(), "comparing number of keys")
+
+		// check pointers
+		for i := uint16(0); i < uint16(idx); i++ {
+			assert.Equal(t, stubNode.getptr(i), newNode.getptr(i), "comparing pointers")
+		}
+
+		// check offsets
+		for i := uint16(0); i < uint16(idx); i++ {
+			assert.Equal(t, stubNode.getOffset(i), newNode.getOffset(i), "comparing offsets")
+		}
+
+		// check kvpairs
+		for i := uint16(0); i < uint16(idx); i++ {
+			assert.Equal(t, stubNode.getKey(i), newNode.getKey(i), "comparing keys")
+			assert.Equal(t, stubNode.getVal(i), newNode.getVal(i), "comparing vals")
+		}
+	})
+
+	t.Run("nodeAppendKV appends a new kv pair to the node", func(t *testing.T) {
+		var newNode BNode = make([]byte, PAGE_SIZE)
+		newNode.setHeader(BNODE_LEAF, 3)
+		idx := uint16(2)
+		key := []byte("this is new key")
+		val := []byte("this is new value")
+
+		nodeAppendKV(newNode, idx, 0, key, val)
+
+		assert.Equal(t, key, newNode.getKey(idx), "checking appended key")
+		assert.Equal(t, val, newNode.getVal(idx), "checking appended val")
+	})
+
+	t.Run("nodeReplaceKidN replaces one kv with multiple kv's", func(t *testing.T) {
+		var newNode BNode = make([]byte, PAGE_SIZE)
+		cache := newC()
+		tree := cache.tree
+		idx := uint16(2)
+
+		stubNode1 := make([]byte, PAGE_SIZE)
+		stubNode2 := make([]byte, PAGE_SIZE)
+		stubNode3 := make([]byte, PAGE_SIZE)
+		copy(stubNode1, stubNode)
+		copy(stubNode2, stubNode)
+		copy(stubNode3, stubNode)
+
+		nodeReplaceKidN(&tree, newNode, stubNode, idx, stubNode, stubNode1, stubNode2, stubNode3)
+
+		// check header
+		assert.Equal(t, uint16(BNODE_NODE), newNode.btype(), "comparing header")
+		// here 3 is added because in the above nodeReplaceKidN function call we are passing
+		// 4 stubNodes
+		assert.Equal(t, stubNode.nkeys()+3, newNode.nkeys(), "comparing keys")
+
+		// check kvpairs upto idx
+		for i := uint16(0); i < idx; i++ {
+			assert.Equal(t, stubNode.getKey(i), newNode.getKey(i))
+			assert.Equal(t, stubNode.getVal(i), newNode.getVal(i))
+		}
+
+		// check if the kvpair at idx is replaced by pointer to the new kids
+		for i := idx; i < idx+4; i++ {
+			assert.Contains(t, cache.pages, newNode.getptr(i))
+		}
+
+		// check kvpairs from idx+1 to end
+		for i := uint16(idx + 1); i < stubNode.nkeys(); i++ {
+			assert.Equal(t, stubNode.getKey(i), newNode.getKey(i+3))
+			assert.Equal(t, stubNode.getVal(i), newNode.getVal(i+3))
+		}
+	})
+
 }
