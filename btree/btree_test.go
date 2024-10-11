@@ -288,22 +288,13 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 		// 4 stubNodes
 		assert.Equal(t, stubNode.nkeys()+3, newNode.nkeys(), "comparing keys")
 
-		// check kvpairs upto idx
-		for i := uint16(0); i < idx; i++ {
-			assert.Equal(t, stubNode.getKey(i), newNode.getKey(i))
-			assert.Equal(t, stubNode.getVal(i), newNode.getVal(i))
-		}
-
 		// check if the kvpair at idx is replaced by pointer to the new kids
 		for i := idx; i < idx+4; i++ {
 			assert.Contains(t, cache.pages, newNode.getptr(i))
 		}
 
-		// check kvpairs from idx+1 to end
-		for i := uint16(idx + 1); i < stubNode.nkeys(); i++ {
-			assert.Equal(t, stubNode.getKey(i), newNode.getKey(i+3))
-			assert.Equal(t, stubNode.getVal(i), newNode.getVal(i+3))
-		}
+		compareNodes(t, newNode, stubNode, 0, 0, idx)
+		compareNodes(t, newNode, stubNode, idx+4, idx+1, stubNode.nkeys()-(idx+1))
 	})
 
 	t.Run("nodeReplace2Kid replaces pointers to 2 nodes with a merged pointers", func(t *testing.T) {
@@ -326,36 +317,12 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 		assert.Equal(t, old.btype(), new.btype(), "checking header")
 		assert.Equal(t, old.nkeys()-1, new.nkeys(), "checking header")
 
-		// check pointers
-		for i := uint16(0); i < idx; i++ {
-			assert.Equal(t, old.getptr(i), new.getptr(i), "comparing pointers")
-		}
-		assert.Equal(t, mergedPtr, new.getptr(idx), "comparing pointer")
-		for i := uint16(idx + 1); i < old.nkeys()-1; i++ {
-			assert.Equal(t, old.getptr(i+1), new.getptr(i-1), "comparing pointer")
-		}
-
-		// check kvpairs
-		for i := uint16(0); i < idx; i++ {
-			sn1key := old.getKey(i)
-			sn2key := new.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
-
-			sn1val := old.getVal(i)
-			sn2val := new.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
+		// compare values at the given index
 		keyAtIdx := new.getKey(idx)
 		assert.Equal(t, key, keyAtIdx, "comparing key at given index")
-		for i := uint16(idx + 1); i < new.nkeys(); i++ {
-			sn1key := old.getKey(i + 1)
-			sn2key := new.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
 
-			sn1val := old.getVal(i + 1)
-			sn2val := new.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
+		compareNodes(t, new, old, 0, 0, idx)
+		compareNodes(t, new, old, idx+1, idx+2, new.nkeys()-(idx+1))
 	})
 }
 
@@ -379,58 +346,21 @@ func TestNodeInsert(t *testing.T) {
 		assert.Equal(t, uint16(BNODE_NODE), stubNode1.btype(), "checking node type")
 		assert.Equal(t, uint16(5), stubNode1.nkeys(), "checking number of keys in node")
 
-		// check pointers
-		for i := uint16(0); i < idx; i++ {
-			assert.Equal(t, stubNode2.getptr(i), stubNode1.getptr(i), "comparing pointers ")
-		}
+		// compare nodes up to the given index
+		compareNodes(t, stubNode1, stubNode2, 0, 0, idx)
+
+		// compare nodes at the given idx
 		assert.Equal(t, uint64(0), stubNode1.getptr(idx))
-		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
-			assert.Equal(t, stubNode2.getptr(i), stubNode1.getptr(i+1), "comparing pointers")
-		}
-
-		// check offsets
-		for i := uint16(1); i <= idx; i++ {
-			reloffset1 := stubNode1.getOffset(i) - stubNode1.getOffset(i-1)
-			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
-
-			assert.Equal(t, reloffset2, reloffset1)
-		}
 		newkvlen := KVHEADER + len(key) + len(val)
 		assert.Equal(t, uint16(newkvlen), stubNode1.getOffset(idx+1)-stubNode1.getOffset(idx))
-		for i := uint16(idx + 1); i < stubNode2.nkeys(); i++ {
-			reloffset1 := stubNode1.getOffset(i+1) - stubNode1.getOffset(i)
-			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
 
-			assert.Equal(t, reloffset2, reloffset1)
-		}
-
-		// check kv pairs upto idx
-		for i := uint16(0); i < idx; i++ {
-			sn1key := stubNode1.getKey(i)
-			sn2key := stubNode2.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
-
-			sn1val := stubNode1.getVal(i)
-			sn2val := stubNode2.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
-
-		// compare kv pair at the given index
 		keyAtIdx := stubNode1.getKey(idx)
 		valAtIdx := stubNode1.getVal(idx)
 		assert.Equal(t, key, keyAtIdx, "comparing keys at given idx")
 		assert.Equal(t, val, valAtIdx, "comparing values at given idx")
 
-		// check rest of kv pairs from upto
-		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
-			sn1key := stubNode1.getKey(i + 1)
-			sn2key := stubNode2.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
-
-			sn1val := stubNode1.getVal(i + 1)
-			sn2val := stubNode2.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
+		// compare node from index to the rest of the index
+		compareNodes(t, stubNode1, stubNode2, idx+1, idx, stubNode2.nkeys()-idx)
 	})
 
 	t.Run("leafInsert inserts given kv pair at the given index", func(t *testing.T) {
@@ -452,49 +382,17 @@ func TestNodeInsert(t *testing.T) {
 		assert.Equal(t, uint16(BNODE_LEAF), stubNode1.btype(), "checking node type")
 		assert.Equal(t, uint16(5), stubNode1.nkeys(), "checking number of keys in node")
 
-		// check offsets
-		for i := uint16(1); i <= idx; i++ {
-			reloffset1 := stubNode1.getOffset(i) - stubNode1.getOffset(i-1)
-			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
+		compareNodes(t, stubNode1, stubNode2, 0, 0, idx)
 
-			assert.Equal(t, reloffset2, reloffset1)
-		}
+		// compare values at given index
 		newkvlen := KVHEADER + len(key) + len(val)
 		assert.Equal(t, uint16(newkvlen), stubNode1.getOffset(idx+1)-stubNode1.getOffset(idx))
-		for i := uint16(idx + 1); i < stubNode2.nkeys(); i++ {
-			reloffset1 := stubNode1.getOffset(i+1) - stubNode1.getOffset(i)
-			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
-
-			assert.Equal(t, reloffset2, reloffset1)
-		}
-
-		// check kv pairs upto idx
-		for i := uint16(0); i < idx; i++ {
-			sn1key := stubNode1.getKey(i)
-			sn2key := stubNode2.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
-
-			sn1val := stubNode1.getVal(i)
-			sn2val := stubNode2.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
-
-		// compare kv pair at the given index
 		keyAtIdx := stubNode1.getKey(idx)
 		valAtIdx := stubNode1.getVal(idx)
 		assert.Equal(t, key, keyAtIdx, "comparing keys at given idx")
 		assert.Equal(t, val, valAtIdx, "comparing values at given idx")
 
-		// check rest of kv pairs from upto
-		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
-			sn1key := stubNode1.getKey(i + 1)
-			sn2key := stubNode2.getKey(i)
-			assert.Equal(t, sn2key, sn1key, "comparing keys")
-
-			sn1val := stubNode1.getVal(i + 1)
-			sn2val := stubNode2.getVal(i)
-			assert.Equal(t, sn2val, sn1val, "comparing vals")
-		}
+		compareNodes(t, stubNode1, stubNode2, idx+1, idx, stubNode2.nkeys()-idx)
 	})
 }
 
@@ -547,4 +445,37 @@ func getStubLeafNode(size int, kvparis [][]byte) BNode {
 		copy(stubNode[spos:], kvparis[i])
 	}
 	return stubNode
+}
+
+// compareNodes compares two node for their equality
+// here len is the length more specifically number of values
+// to be compared from the start of the nodes
+func compareNodes(t testing.TB, new BNode, old BNode,
+	newStart uint16, oldStart uint16, len uint16) {
+	t.Helper()
+
+	// check pointers
+	n, o := newStart, oldStart
+	for i := uint16(0); i < len; i++ {
+		assert.Equal(t, old.getptr(o+i), new.getptr(n+i), "comparing pointers")
+	}
+
+	// check kvpairs
+	for i := uint16(0); i < len; i++ {
+		sn1key := old.getKey(o + i)
+		sn2key := new.getKey(n + i)
+		assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+		sn1val := old.getVal(o + i)
+		sn2val := new.getVal(n + i)
+		assert.Equal(t, sn2val, sn1val, "comparing vals")
+	}
+
+	// check offsets
+	for i := uint16(1); i <= len; i++ {
+		reloffset1 := old.getOffset(i+o) - old.getOffset(i-1+o)
+		reloffset2 := new.getOffset(i+n) - new.getOffset(i-1+n)
+
+		assert.Equal(t, reloffset2, reloffset1, "comparing offsets")
+	}
 }

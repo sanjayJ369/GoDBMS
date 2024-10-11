@@ -67,7 +67,7 @@ func (b BNode) setHeader(btype, nkeys uint16) {
 // getptr returns pointer to node at a given index
 func (b BNode) getptr(idx uint16) uint64 {
 	if idx >= b.nkeys() {
-		log.Fatalf("out of bounds, index: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("out of bounds getting pointer, index: %d, nkeys: %d", idx, b.nkeys())
 	}
 	sbyte := HEADER + (idx * 8)
 	return binary.LittleEndian.Uint64(b[sbyte:])
@@ -133,7 +133,7 @@ func (b BNode) kvPos(idx uint16) uint16 {
 
 func (b BNode) getKey(idx uint16) []byte {
 	if idx >= b.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("out of bounds getting key, idx: %d, nkeys: %d", idx, b.nkeys())
 	}
 	kvpos := b.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(b[kvpos:])
@@ -144,7 +144,7 @@ func (b BNode) getKey(idx uint16) []byte {
 
 func (b BNode) getVal(idx uint16) []byte {
 	if idx >= b.nkeys() {
-		log.Fatalf("out of bounds, idx: %d, nkeys: %d", idx, b.nkeys())
+		log.Fatalf("out of bounds getting value, idx: %d, nkeys: %d", idx, b.nkeys())
 	}
 	kvpos := b.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(b[kvpos:])
