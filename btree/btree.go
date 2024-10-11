@@ -246,13 +246,13 @@ func nodeAppendRange(
 	copy(new[newBegin:], old[begin:end])
 }
 
-// nodeInsertDynamic inserts new key value pair at the given index
+// nodeInsertInNode inserts new key value pair at the given index
 // along with modifying the pointers, offsets and header
-func nodeInsertDynamic(new BNode, idx uint16, ptr uint64, key, val []byte) {
+func nodeInsertInNode(new BNode, idx uint16, ptr uint64, key, val []byte) {
 
 	// create a temp node to store data
 	var temp BNode
-	size := math.Ceil(float64(new.nbytes() / PAGE_SIZE))
+	size := math.Ceil(float64(new.nbytes()) / float64(PAGE_SIZE))
 	temp = make([]byte, PAGE_SIZE*int(size))
 
 	// check if kv-pairs fits in the page
@@ -263,27 +263,10 @@ func nodeInsertDynamic(new BNode, idx uint16, ptr uint64, key, val []byte) {
 
 	copy(temp, new)
 
-	// set header
-	new.setHeader(temp.btype(), temp.nkeys()+1)
-
-	// copy pointers upto index
-	for i := uint16(0); i < idx; i++ {
-		ptr := temp.getptr(i)
-		new.setptr(i, ptr)
-	}
-	new.setptr(idx, ptr)
-	for i := uint16(idx); i < temp.nkeys(); i++ {
-		ptr := temp.getptr(i)
-		new.setptr(i+1, ptr)
-	}
-
-	// copy offsets into the new node
-	// kvposPtr := HEADER + new.nkeys()*POINTER + new.nkeys()*OFFSET
-	// spostemp := HEADER + temp.nkeys()*POINTER
-	// for i := uint16(0); i < idx; i++ {
-	// 	// length of kv pair
-	// 	reloffset := temp.getOffset(i) - temp.getOffset(i-1)
-	// }
+	new.setHeader(BNODE_NODE, temp.nkeys()+1)
+	nodeAppendRange(new, temp, 0, 0, idx)
+	nodeAppendKV(new, idx, ptr, key, val)
+	nodeAppendRange(new, temp, idx+1, idx, temp.nkeys()-idx)
 }
 
 // nodeAppendKV adds a new kv pair to the node at a given index,
@@ -334,6 +317,7 @@ func nodeReplaceKidN(
 }
 
 // nodeReplace2Kid replaces pointers to 2 nodes with a merged pointers
+// if the idx is 2 it will replace kvpair 2, 3 with 2
 func nodeReplace2Kid(
 	new BNode, old BNode, idx uint16,
 	mergedPtr uint64, key []byte,

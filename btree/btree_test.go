@@ -209,32 +209,6 @@ func getKVpair(key, val []byte) []byte {
 	return kv
 }
 
-func getStubInternalNode(size int,
-	kvparis [][]byte, pointers []uint64) BNode {
-
-	var stubNode BNode = make([]byte, size)
-	stubNode.setHeader(BNODE_NODE, uint16(len(kvparis)))
-
-	// set pointers if it's internal node
-	for i := uint16(0); i < stubNode.nkeys(); i++ {
-		stubNode.setptr(i, pointers[i])
-	}
-
-	// set offsets
-	acc := uint16(0)
-	for i := uint16(1); i <= stubNode.nkeys(); i++ {
-		acc += uint16(len(kvparis[i-1]))
-		stubNode.setOffset(i, acc)
-	}
-
-	// set kv pairs
-	for i := uint16(0); i < stubNode.nkeys(); i++ {
-		spos := stubNode.kvPos(i)
-		copy(stubNode[spos:], kvparis[i])
-	}
-	return stubNode
-}
-
 func TestBNodeManipulationFuncs(t *testing.T) {
 	// create a stub key
 	kvpairs := make([][]byte, 0)
@@ -332,4 +306,245 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 		}
 	})
 
+	t.Run("nodeReplace2Kid replaces pointers to 2 nodes with a merged pointers", func(t *testing.T) {
+		// create new stub node
+		kvpairs := make([][]byte, 0)
+		for i := 0; i < 4; i++ {
+			k := []byte(fmt.Sprintf("this is key%d", i))
+			v := []byte(fmt.Sprintf("this is val%d", i))
+			kvp := getKVpair(k, v)
+			kvpairs = append(kvpairs, kvp)
+		}
+		idx := uint16(2)
+		mergedPtr := uint64(2525)
+		old := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
+		new := BNode(make([]byte, PAGE_SIZE))
+		key := []byte("this is new key")
+		nodeReplace2Kid(new, old, idx, mergedPtr, key)
+
+		// check header
+		assert.Equal(t, old.btype(), new.btype(), "checking header")
+		assert.Equal(t, old.nkeys()-1, new.nkeys(), "checking header")
+
+		// check pointers
+		for i := uint16(0); i < idx; i++ {
+			assert.Equal(t, old.getptr(i), new.getptr(i), "comparing pointers")
+		}
+		assert.Equal(t, mergedPtr, new.getptr(idx), "comparing pointer")
+		for i := uint16(idx + 1); i < old.nkeys()-1; i++ {
+			assert.Equal(t, old.getptr(i+1), new.getptr(i-1), "comparing pointer")
+		}
+
+		// check kvpairs
+		for i := uint16(0); i < idx; i++ {
+			sn1key := old.getKey(i)
+			sn2key := new.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := old.getVal(i)
+			sn2val := new.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+		keyAtIdx := new.getKey(idx)
+		assert.Equal(t, key, keyAtIdx, "comparing key at given index")
+		for i := uint16(idx + 1); i < new.nkeys(); i++ {
+			sn1key := old.getKey(i + 1)
+			sn2key := new.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := old.getVal(i + 1)
+			sn2val := new.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+	})
+}
+
+func TestNodeInsert(t *testing.T) {
+	t.Run("nodeInsertInNode inserts kv pair at the given index", func(t *testing.T) {
+		kvpairs := make([][]byte, 0)
+		for i := 0; i < 4; i++ {
+			k := []byte(fmt.Sprintf("this is key%d", i))
+			v := []byte(fmt.Sprintf("this is val%d", i))
+			kvp := getKVpair(k, v)
+			kvpairs = append(kvpairs, kvp)
+		}
+		idx := uint16(2)
+		stubNode1 := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
+		stubNode2 := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
+		key := []byte("this is new key")
+		val := []byte("this is new val")
+		nodeInsertInNode(stubNode1, idx, 0, key, val)
+
+		// check header
+		assert.Equal(t, uint16(BNODE_NODE), stubNode1.btype(), "checking node type")
+		assert.Equal(t, uint16(5), stubNode1.nkeys(), "checking number of keys in node")
+
+		// check pointers
+		for i := uint16(0); i < idx; i++ {
+			assert.Equal(t, stubNode2.getptr(i), stubNode1.getptr(i), "comparing pointers ")
+		}
+		assert.Equal(t, uint64(0), stubNode1.getptr(idx))
+		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
+			assert.Equal(t, stubNode2.getptr(i), stubNode1.getptr(i+1), "comparing pointers")
+		}
+
+		// check offsets
+		for i := uint16(1); i <= idx; i++ {
+			reloffset1 := stubNode1.getOffset(i) - stubNode1.getOffset(i-1)
+			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
+
+			assert.Equal(t, reloffset2, reloffset1)
+		}
+		newkvlen := KVHEADER + len(key) + len(val)
+		assert.Equal(t, uint16(newkvlen), stubNode1.getOffset(idx+1)-stubNode1.getOffset(idx))
+		for i := uint16(idx + 1); i < stubNode2.nkeys(); i++ {
+			reloffset1 := stubNode1.getOffset(i+1) - stubNode1.getOffset(i)
+			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
+
+			assert.Equal(t, reloffset2, reloffset1)
+		}
+
+		// check kv pairs upto idx
+		for i := uint16(0); i < idx; i++ {
+			sn1key := stubNode1.getKey(i)
+			sn2key := stubNode2.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := stubNode1.getVal(i)
+			sn2val := stubNode2.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+
+		// compare kv pair at the given index
+		keyAtIdx := stubNode1.getKey(idx)
+		valAtIdx := stubNode1.getVal(idx)
+		assert.Equal(t, key, keyAtIdx, "comparing keys at given idx")
+		assert.Equal(t, val, valAtIdx, "comparing values at given idx")
+
+		// check rest of kv pairs from upto
+		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
+			sn1key := stubNode1.getKey(i + 1)
+			sn2key := stubNode2.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := stubNode1.getVal(i + 1)
+			sn2val := stubNode2.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+	})
+
+	t.Run("leafInsert inserts given kv pair at the given index", func(t *testing.T) {
+		kvpairs := make([][]byte, 0)
+		for i := 0; i < 4; i++ {
+			k := []byte(fmt.Sprintf("this is key%d", i))
+			v := []byte(fmt.Sprintf("this is val%d", i))
+			kvp := getKVpair(k, v)
+			kvpairs = append(kvpairs, kvp)
+		}
+		idx := uint16(2)
+		stubNode1 := BNode(make([]byte, PAGE_SIZE))
+		stubNode2 := getStubLeafNode(PAGE_SIZE, kvpairs)
+		key := []byte("this is new key")
+		val := []byte("this is new val")
+		leafInsert(stubNode1, stubNode2, idx, key, val)
+
+		// check header
+		assert.Equal(t, uint16(BNODE_LEAF), stubNode1.btype(), "checking node type")
+		assert.Equal(t, uint16(5), stubNode1.nkeys(), "checking number of keys in node")
+
+		// check offsets
+		for i := uint16(1); i <= idx; i++ {
+			reloffset1 := stubNode1.getOffset(i) - stubNode1.getOffset(i-1)
+			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
+
+			assert.Equal(t, reloffset2, reloffset1)
+		}
+		newkvlen := KVHEADER + len(key) + len(val)
+		assert.Equal(t, uint16(newkvlen), stubNode1.getOffset(idx+1)-stubNode1.getOffset(idx))
+		for i := uint16(idx + 1); i < stubNode2.nkeys(); i++ {
+			reloffset1 := stubNode1.getOffset(i+1) - stubNode1.getOffset(i)
+			reloffset2 := stubNode2.getOffset(i) - stubNode2.getOffset(i-1)
+
+			assert.Equal(t, reloffset2, reloffset1)
+		}
+
+		// check kv pairs upto idx
+		for i := uint16(0); i < idx; i++ {
+			sn1key := stubNode1.getKey(i)
+			sn2key := stubNode2.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := stubNode1.getVal(i)
+			sn2val := stubNode2.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+
+		// compare kv pair at the given index
+		keyAtIdx := stubNode1.getKey(idx)
+		valAtIdx := stubNode1.getVal(idx)
+		assert.Equal(t, key, keyAtIdx, "comparing keys at given idx")
+		assert.Equal(t, val, valAtIdx, "comparing values at given idx")
+
+		// check rest of kv pairs from upto
+		for i := uint16(idx); i < stubNode2.nkeys(); i++ {
+			sn1key := stubNode1.getKey(i + 1)
+			sn2key := stubNode2.getKey(i)
+			assert.Equal(t, sn2key, sn1key, "comparing keys")
+
+			sn1val := stubNode1.getVal(i + 1)
+			sn2val := stubNode2.getVal(i)
+			assert.Equal(t, sn2val, sn1val, "comparing vals")
+		}
+	})
+}
+
+func getStubInternalNode(size int,
+	kvparis [][]byte, pointers []uint64) BNode {
+
+	var stubNode BNode = make([]byte, size)
+	stubNode.setHeader(BNODE_NODE, uint16(len(kvparis)))
+
+	// set pointers if it's internal node
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		stubNode.setptr(i, pointers[i])
+	}
+
+	// set offsets
+	acc := uint16(0)
+	for i := uint16(1); i <= stubNode.nkeys(); i++ {
+		acc += uint16(len(kvparis[i-1]))
+		stubNode.setOffset(i, acc)
+	}
+
+	// set kv pairs
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		spos := stubNode.kvPos(i)
+		copy(stubNode[spos:], kvparis[i])
+	}
+	return stubNode
+}
+
+func getStubLeafNode(size int, kvparis [][]byte) BNode {
+
+	var stubNode BNode = make([]byte, size)
+	stubNode.setHeader(BNODE_LEAF, uint16(len(kvparis)))
+
+	// set pointers if it's internal node
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		stubNode.setptr(i, 0)
+	}
+
+	// set offsets
+	acc := uint16(0)
+	for i := uint16(1); i <= stubNode.nkeys(); i++ {
+		acc += uint16(len(kvparis[i-1]))
+		stubNode.setOffset(i, acc)
+	}
+
+	// set kv pairs
+	for i := uint16(0); i < stubNode.nkeys(); i++ {
+		spos := stubNode.kvPos(i)
+		copy(stubNode[spos:], kvparis[i])
+	}
+	return stubNode
 }
