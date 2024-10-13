@@ -336,49 +336,61 @@ func nodeReplace2Kid(
 }
 
 // split a oversized node into 2 so that the 2nd node always fits on a page
-func nodeSplit2(left BNode, right BNode, old BNode) {
-	// split the node into half
-	if old.nbytes() <= PAGE_SIZE*2 {
-		idx := uint16(0)
-		for old.kvPos(idx) <= PAGE_SIZE {
-			idx++
-		}
-		nodeAppendRange(left, old, 0, 0, idx)
-		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
-	} else {
-		idx := uint16(0)
-		for old.kvPos(idx) <= 2*PAGE_SIZE {
-			idx++
-		}
-		nodeAppendRange(left, old, 0, 0, idx)
-		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+// it returns the meidan idx
+// here the values upto index are stored in the left node
+// from rest of the values are stored in the right node
+func nodeSplit2(left BNode, right BNode, old BNode) uint16 {
+	if old.nbytes() <= PAGE_SIZE {
+		return 0
 	}
+
+	idx := old.nkeys()
+	size := uint16(HEADER)
+	for size < PAGE_SIZE {
+		size += (old.kvPos(idx) - old.kvPos(idx-1)) + POINTER + OFFSET
+		idx--
+	}
+	idx++
+
+	left.setHeader(old.btype(), idx)
+	right.setHeader(old.btype(), old.nkeys()-idx)
+
+	nodeAppendRange(left, old, 0, 0, idx)
+	nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+	return idx
 }
 
-// split a node if it's too big. the results are 1~3 nodes.
-func nodeSplit3(old BNode) (uint16, [3]BNode) {
+// Split a node if it's too big. The results are 1~3 nodes.
+// It returns the split points of the old node.
+//
+//	.Layout:|--leftleft-----|----middle-----|------right------|
+//
+//	.                       ^ -> mid1       ^ -> mid2
+//
+// Return values: (uint16, [3]BNode, mid1, mid2)
+func nodeSplit3(old BNode) (uint16, [3]BNode, uint16, uint16) {
 	// check if the node is small
 	if old.nbytes() <= PAGE_SIZE {
-		return 1, [3]BNode{old}
+		return 1, [3]BNode{old}, 0, 0
 	}
 
 	// allocate in-memory pages
 	left := BNode(make([]byte, 2*PAGE_SIZE)) // may be split later
 	right := BNode(make([]byte, PAGE_SIZE))
-	nodeSplit2(left, right, old)
+	mid2 := nodeSplit2(left, right, old)
 
 	// if left fits in a page return 2 nodes
 	if left.nbytes() <= PAGE_SIZE {
 		left = left[:PAGE_SIZE]
-		return 2, [3]BNode{left, right}
+		return 2, [3]BNode{left, right}, 0, mid2
 	}
 
 	// if size of left is more split left node
 	leftleft := BNode(make([]byte, PAGE_SIZE))
 	middle := BNode(make([]byte, PAGE_SIZE))
 
-	nodeSplit2(leftleft, middle, left)
-	return 3, [3]BNode{leftleft, middle, right}
+	mid1 := nodeSplit2(leftleft, middle, left)
+	return 3, [3]BNode{leftleft, middle, right}, mid1, mid2
 }
 
 // insert a KV into a node, the result might be split.
@@ -420,7 +432,7 @@ func nodeInsert(
 	knode := treeInsert(tree, tree.get(kptr), key, val)
 
 	// split the result
-	nsplit, split := nodeSplit3(knode)
+	nsplit, split, _, _ := nodeSplit3(knode)
 
 	// deallocate the child node
 	tree.del(kptr)
@@ -446,7 +458,7 @@ func (t *BTree) Insert(key, val []byte) {
 	}
 
 	node := treeInsert(t, t.get(t.root), key, val)
-	nsplit, split := nodeSplit3(node)
+	nsplit, split, _, _ := nodeSplit3(node)
 	t.del(t.root)
 
 	if nsplit > 1 {

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math"
 	"testing"
 	"unsafe"
 
@@ -326,7 +327,7 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 	})
 }
 
-func TestNodeInsert(t *testing.T) {
+func TestNodeUpdate(t *testing.T) {
 	t.Run("nodeInsertInNode inserts kv pair at the given index", func(t *testing.T) {
 		kvpairs := make([][]byte, 0)
 		for i := 0; i < 4; i++ {
@@ -393,6 +394,189 @@ func TestNodeInsert(t *testing.T) {
 		assert.Equal(t, val, valAtIdx, "comparing values at given idx")
 
 		compareNodes(t, stubNode1, stubNode2, idx+1, idx, stubNode2.nkeys()-idx)
+	})
+
+	t.Run("leafDelete deletes given kv pair at the given index", func(t *testing.T) {
+		kvpairs := make([][]byte, 0)
+		for i := 0; i < 4; i++ {
+			k := []byte(fmt.Sprintf("this is key%d", i))
+			v := []byte(fmt.Sprintf("this is val%d", i))
+			kvp := getKVpair(k, v)
+			kvpairs = append(kvpairs, kvp)
+		}
+		old := getStubLeafNode(PAGE_SIZE, kvpairs)
+
+		new := BNode(make([]byte, PAGE_SIZE))
+		idx := uint16(2)
+
+		leafDelete(new, old, idx)
+
+		// check header
+		assert.Equal(t, uint16(BNODE_LEAF), new.btype(), "checking node type")
+		assert.Equal(t, old.nkeys()-1, new.nkeys(), "checking number of keys in node")
+
+		compareNodes(t, new, old, 0, 0, idx)
+		compareNodes(t, new, old, idx, idx+1, new.nkeys()-idx)
+	})
+
+	t.Run("leafUpdate updates the value of the given key", func(t *testing.T) {
+		//  creating a stub node
+		kvpairs := make([][]byte, 0)
+		for i := 0; i < 4; i++ {
+			k := []byte(fmt.Sprintf("this is key%d", i))
+			v := []byte(fmt.Sprintf("this is val%d", i))
+			kvp := getKVpair(k, v)
+			kvpairs = append(kvpairs, kvp)
+		}
+		old := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
+
+		new := BNode(make([]byte, PAGE_SIZE))
+
+		idx := uint16(2)
+		// set header of new node
+		new.setHeader(old.btype(), old.nkeys())
+		leafUpdate(new, old, idx, []byte("this is new key"), []byte("this is updated value"))
+
+		// check header
+		assert.Equal(t, old.btype(), new.btype(), "comparing headers")
+		assert.Equal(t, old.nkeys(), new.nkeys(), "comparing number of keys")
+
+		// compare nodes upto index
+		compareNodes(t, new, old, 0, 0, idx)
+		// compare updated values at the given index
+		assert.Equal(t, []byte("this is new key"), new.getKey(idx))
+		assert.Equal(t, []byte("this is updated value"), new.getVal(idx))
+		// compare rest of the nodes
+		compareNodes(t, new, old, idx+1, idx+1, old.nkeys()-idx-1)
+	})
+}
+
+func TestNodeSplit(t *testing.T) {
+	t.Run("nodeSplit2 splits the node of size 2 * PAGE_SIZE into two nodes", func(t *testing.T) {
+		// create a new node whose size spans two pages
+		kvpairs := make([][]byte, 0)
+		size := HEADER * 2
+		count := 0
+		for size < 2*PAGE_SIZE {
+			key := make([]byte, 250)
+			copy(key, []byte(fmt.Sprintf("this is key%d", count)))
+
+			val := make([]byte, 250)
+			copy(val, []byte(fmt.Sprintf("this is val%d", count)))
+
+			size += len(key) + len(val) + KVHEADER + POINTER + OFFSET
+			newkv := getKVpair(key, val)
+
+			kvpairs = append(kvpairs, newkv)
+			count += 1
+		}
+		// remove the last kv pair
+		kvpairs = kvpairs[:len(kvpairs)-1]
+		old := getStubLeafNode(2*PAGE_SIZE, kvpairs)
+		left := BNode(make([]byte, 2*PAGE_SIZE))
+		right := BNode(make([]byte, PAGE_SIZE))
+
+		midIdx := nodeSplit2(left, right, old)
+
+		compareNodes(t, left, old, 0, 0, midIdx)
+		compareNodes(t, right, old, 0, midIdx, old.nkeys()-midIdx)
+		assert.Equal(t, left.nkeys()+right.nkeys(), old.nkeys())
+	})
+
+	t.Run("nodeSplit2 splits the node of size 3 * PAGE_SIZE into two nodes", func(t *testing.T) {
+		// create a new node whose size spans two pages
+		// it is assumed that the node size is not greater then 2.5*PAGE_SIZE
+		kvpairs := make([][]byte, 0)
+		size := HEADER * 2
+		count := 0
+		for size < 2.5*PAGE_SIZE {
+			key := make([]byte, 250)
+			copy(key, []byte(fmt.Sprintf("this is key%d", count)))
+
+			val := make([]byte, 250)
+			copy(val, []byte(fmt.Sprintf("this is val%d", count)))
+
+			size += len(key) + len(val) + KVHEADER + POINTER + OFFSET
+			newkv := getKVpair(key, val)
+
+			kvpairs = append(kvpairs, newkv)
+			count += 1
+		}
+		// remove the last kv pair
+		kvpairs = kvpairs[:len(kvpairs)-1]
+		old := getStubLeafNode(3*PAGE_SIZE, kvpairs)
+		left := BNode(make([]byte, 2*PAGE_SIZE))
+		right := BNode(make([]byte, PAGE_SIZE))
+
+		midIdx := nodeSplit2(left, right, old)
+
+		compareNodes(t, left, old, 0, 0, midIdx)
+		compareNodes(t, right, old, 0, midIdx, old.nkeys()-midIdx)
+		assert.Equal(t, left.nkeys()+right.nkeys(), old.nkeys())
+	})
+
+	t.Run("nodeSplit3 splits single node of size greater then 2*PAGE_SIZE into three nodes", func(t *testing.T) {
+		// create a new node whose size spans two pages
+		// it is assumed that the node size is not greater then 2.5*PAGE_SIZE
+		kvpairs := make([][]byte, 0)
+		size := HEADER * 2
+		count := 0
+		for size < 2.5*PAGE_SIZE {
+			key := make([]byte, 250)
+			copy(key, []byte(fmt.Sprintf("this is key%d", count)))
+
+			val := make([]byte, 250)
+			copy(val, []byte(fmt.Sprintf("this is val%d", count)))
+
+			size += len(key) + len(val) + KVHEADER + POINTER + OFFSET
+			newkv := getKVpair(key, val)
+
+			kvpairs = append(kvpairs, newkv)
+			count += 1
+		}
+		// remove the last kv pair
+		kvpairs = kvpairs[:len(kvpairs)-1]
+		old := getStubLeafNode(3*PAGE_SIZE, kvpairs)
+		Nnodes, Nodes, mid1, mid2 := nodeSplit3(old)
+		assert.Equal(t, uint16(3), Nnodes)
+
+		left := Nodes[0]
+		mid := Nodes[1]
+		right := Nodes[2]
+		compareNodes(t, left, old, 0, 0, mid1)
+		compareNodes(t, mid, old, 0, mid1, mid2-mid1)
+		compareNodes(t, right, old, 0, mid2, old.nkeys()-mid2)
+	})
+
+	t.Run("nodeSplit3 splits single node of size less then 2*PAGE_SIZE into two nodes", func(t *testing.T) {
+		// create a new node whose size spans two pages
+		// it is assumed that the node size is not greater then 2.5*PAGE_SIZE
+		kvpairs := make([][]byte, 0)
+		size := HEADER * 2
+		count := 0
+		for size < int(math.Round(1.8*PAGE_SIZE)) {
+			key := make([]byte, 250)
+			copy(key, []byte(fmt.Sprintf("this is key%d", count)))
+
+			val := make([]byte, 250)
+			copy(val, []byte(fmt.Sprintf("this is val%d", count)))
+
+			size += len(key) + len(val) + KVHEADER + POINTER + OFFSET
+			newkv := getKVpair(key, val)
+
+			kvpairs = append(kvpairs, newkv)
+			count += 1
+		}
+		// remove the last kv pair
+		kvpairs = kvpairs[:len(kvpairs)-1]
+		old := getStubLeafNode(2*PAGE_SIZE, kvpairs)
+		Nnodes, Nodes, _, mid2 := nodeSplit3(old)
+		assert.Equal(t, uint16(2), Nnodes)
+
+		left := Nodes[0]
+		right := Nodes[1]
+		compareNodes(t, left, old, 0, 0, mid2)
+		compareNodes(t, right, old, 0, mid2, old.nkeys()-mid2)
 	})
 }
 
