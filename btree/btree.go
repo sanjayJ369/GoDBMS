@@ -3,8 +3,10 @@ package btree
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"math"
+	"strings"
 )
 
 const (
@@ -371,7 +373,7 @@ func nodeSplit2(left BNode, right BNode, old BNode) uint16 {
 func nodeSplit3(old BNode) (uint16, [3]BNode, uint16, uint16) {
 	// check if the node is small
 	if old.nbytes() <= PAGE_SIZE {
-		return 1, [3]BNode{old}, 0, 0
+		return 1, [3]BNode{old[:PAGE_SIZE]}, 0, 0
 	}
 
 	// allocate in-memory pages
@@ -391,6 +393,63 @@ func nodeSplit3(old BNode) (uint16, [3]BNode, uint16, uint16) {
 
 	mid1 := nodeSplit2(leftleft, middle, left)
 	return 3, [3]BNode{leftleft, middle, right}, mid1, mid2
+}
+
+type linkedList []BNode
+
+func (l *linkedList) enqueue(val BNode) {
+	*l = append(*l, val)
+}
+
+func (l *linkedList) dequeue() BNode {
+	if len(*l) == 0 {
+		fmt.Println("linked list is empty")
+		return nil
+	}
+	ele := (*l)[0]
+	(*l) = (*l)[1:]
+	return ele
+}
+
+func PrintNode(node BNode) {
+
+	for i := uint16(0); i < node.nkeys(); i++ {
+		fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
+			func(r rune) bool {
+				return r == bytes.Runes([]byte{0})[0]
+			}))
+	}
+	fmt.Print("|k:", node.nkeys(), "|", "\t")
+}
+
+func PrintTree(tree BTree, node BNode) {
+	var list linkedList = make([]BNode, 0)
+	var toprint linkedList = make([]BNode, 0)
+	list = append(list, node)
+	levels := 0
+	for len(list) != 0 {
+		// get first element
+		for len(list) != 0 {
+			node := list.dequeue()
+			toprint.enqueue(node)
+		}
+
+		for len(toprint) != 0 {
+			node := toprint.dequeue()
+			PrintNode(node)
+			if node.btype() != uint16(BNODE_LEAF) {
+				for i := uint16(0); i < node.nkeys(); i++ {
+					list.enqueue(tree.get(node.getptr(i)))
+				}
+			}
+		}
+		levels += 1
+		fmt.Println("\n-----------------------------------------------------------")
+	}
+	fmt.Println("levels:", levels)
+	fmt.Println()
+	fmt.Println()
+	fmt.Println()
 }
 
 // insert a KV into a node, the result might be split.
@@ -440,12 +499,37 @@ func nodeInsert(
 	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
 }
 
+func (t BTree) getVal(node BNode, key []byte) ([]byte, error) {
+	switch node.btype() {
+	case BNODE_LEAF:
+		idx := nodeLookupLE(node, key)
+		if bytes.Equal(node.getKey(idx), key) {
+			return node.getVal(idx), nil
+		}
+		return nil, fmt.Errorf("key not present %v", key)
+
+	case BNODE_NODE:
+		idx := nodeLookupLE(node, key)
+		cptr := node.getptr(idx)
+		cnode := BNode(t.get(uint64(cptr)))
+		return t.getVal(cnode, key)
+	}
+	return nil, fmt.Errorf("invalid node header")
+}
+
+func (t *BTree) GetVal(key []byte) ([]byte, error) {
+	if t.root == 0 {
+		return nil, fmt.Errorf("btree is empty")
+	}
+	return t.getVal(t.get(t.root), key)
+}
+
 func (t *BTree) Insert(key, val []byte) {
 	// if there is no root node
 	if t.root == 0 {
 		// create a new node
 		new := BNode(make([]byte, PAGE_SIZE))
-		new.setHeader(BNODE_NODE, 2)
+		new.setHeader(BNODE_LEAF, 2)
 
 		// add fake KV pair to hold the constrain of
 		// node having more then 2 values
@@ -466,7 +550,8 @@ func (t *BTree) Insert(key, val []byte) {
 		// create new root node
 		newRoot := BNode(make([]byte, PAGE_SIZE))
 		newRoot.setHeader(BNODE_NODE, nsplit)
-		for i, childNode := range split {
+		for i := 0; i < int(nsplit); i++ {
+			childNode := split[i]
 			ptr, key := t.new(childNode), childNode.getKey(0)
 			nodeAppendKV(newRoot, uint16(i), ptr, key, nil)
 		}
@@ -526,6 +611,30 @@ func nodeMerge(new, left, right BNode) {
 
 	// append right node to new node
 	nodeAppendRange(new, right, left.nkeys(), 0, right.nkeys())
+}
+
+func (tree *BTree) Delete(key []byte) bool {
+	if tree.root == 0 {
+		log.Panicln("root node is empty")
+		return false
+	}
+
+	updatedNode := treeDelete(tree, BNode(tree.get(tree.root)), key)
+
+	// key not found
+	if len(updatedNode) == 0 {
+		return false
+	}
+
+	tree.del(tree.root)
+
+	if updatedNode.btype() == BNODE_NODE && updatedNode.nkeys() == 1 {
+		// make child as the new root
+		tree.root = updatedNode.getptr(0)
+	} else {
+		tree.root = tree.new(updatedNode)
+	}
+	return true
 }
 
 func treeDelete(tree *BTree, node BNode, key []byte) BNode {

@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // format used to store bytes is 	LITTLE ENDIAN
@@ -26,7 +27,7 @@ func newC() *C {
 			get: func(u uint64) []byte {
 				p, ok := pages[u]
 				if !ok {
-					log.Fatalln("invalid page pointer")
+					log.Fatalln("invalid page pointer, page does not exist")
 				}
 				return p
 			},
@@ -37,7 +38,7 @@ func newC() *C {
 				}
 				ptr := uint64(uintptr(unsafe.Pointer(&b[0])))
 				if pages[ptr] != nil {
-					log.Fatalln("invalid page pointer")
+					log.Fatalln("invalid page pointer, page exists")
 				}
 				pages[ptr] = b
 				return ptr
@@ -580,6 +581,58 @@ func TestNodeSplit(t *testing.T) {
 	})
 }
 
+func TestInsert(t *testing.T) {
+	t.Run("Insert insert's new kv pair into tree", func(t *testing.T) {
+		// insert 100 kvpairs
+		cache := newC()
+		tree := cache.tree
+
+		for i := 0; i < 100; i++ {
+			key, val := getStubKeyValue(500, i)
+			tree.Insert(key, val)
+		}
+
+		for i := 0; i < 100; i++ {
+			key, val := getStubKeyValue(500, i)
+			got, err := tree.GetVal(key)
+			require.NoError(t, err)
+			assert.Equal(t, val, got)
+		}
+	})
+}
+
+func TestDelete(t *testing.T) {
+	t.Run("Delete the key from the Btree", func(t *testing.T) {
+		// insert 100 kvpairs
+		cache := newC()
+		tree := cache.tree
+
+		for i := 0; i < 100; i++ {
+			key, val := getStubKeyValue(500, i)
+			tree.Insert(key, val)
+		}
+
+		for i := 0; i < 100; i++ {
+			key, _ := getStubKeyValue(500, i)
+			assert.True(t, tree.Delete(key))
+		}
+	})
+}
+
+func getStubKeyValue(size, id int) ([]byte, []byte) {
+	if size == 0 {
+		key := []byte(fmt.Sprintf("key%d", id))
+		val := []byte(fmt.Sprintf("this is val%d", id))
+		return key, val
+	}
+
+	key := make([]byte, size)
+	copy(key, []byte(fmt.Sprintf("key%d ", id)))
+	val := make([]byte, size)
+	copy(val, []byte(fmt.Sprintf("this is val%d ", id)))
+
+	return key, val
+}
 func getStubInternalNode(size int,
 	kvparis [][]byte, pointers []uint64) BNode {
 
