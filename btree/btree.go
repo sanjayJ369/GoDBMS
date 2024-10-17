@@ -30,10 +30,10 @@ const (
 type BNode []byte
 
 type BTree struct {
-	root uint64              // pointer to page
-	get  func(uint64) []byte // get the page
-	new  func([]byte) uint64 // allocate a new page
-	del  func(uint64)        // allocate87 a page
+	Root uint64              // pointer to page
+	Get  func(uint64) []byte // get the page
+	New  func([]byte) uint64 // allocate a new page
+	Del  func(uint64)        // allocate87 a page
 }
 
 // checks if max node size can fit into a page
@@ -312,7 +312,7 @@ func nodeReplaceKidN(
 
 	// append new kv or multiple keys at give index
 	for i, node := range kids {
-		nodeAppendKV(new, idx+uint16(i), tree.new(node), node.getKey(0), nil)
+		nodeAppendKV(new, idx+uint16(i), tree.New(node), node.getKey(0), nil)
 	}
 	// append kv's from index + 1 to all of the indexes
 	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-(idx+1))
@@ -439,7 +439,7 @@ func PrintTree(tree BTree, node BNode) {
 			PrintNode(node)
 			if node.btype() != uint16(BNODE_LEAF) {
 				for i := uint16(0); i < node.nkeys(); i++ {
-					list.enqueue(tree.get(node.getptr(i)))
+					list.enqueue(tree.Get(node.getptr(i)))
 				}
 			}
 		}
@@ -488,13 +488,13 @@ func nodeInsert(
 
 	// reccursive call to traverse through the tree
 	// and insert into child
-	knode := treeInsert(tree, tree.get(kptr), key, val)
+	knode := treeInsert(tree, tree.Get(kptr), key, val)
 
 	// split the result
 	nsplit, split, _, _ := nodeSplit3(knode)
 
 	// deallocate the child node
-	tree.del(kptr)
+	tree.Del(kptr)
 
 	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
 }
@@ -511,22 +511,22 @@ func (t BTree) getVal(node BNode, key []byte) ([]byte, error) {
 	case BNODE_NODE:
 		idx := nodeLookupLE(node, key)
 		cptr := node.getptr(idx)
-		cnode := BNode(t.get(uint64(cptr)))
+		cnode := BNode(t.Get(uint64(cptr)))
 		return t.getVal(cnode, key)
 	}
 	return nil, fmt.Errorf("invalid node header")
 }
 
 func (t *BTree) GetVal(key []byte) ([]byte, error) {
-	if t.root == 0 {
+	if t.Root == 0 {
 		return nil, fmt.Errorf("btree is empty")
 	}
-	return t.getVal(t.get(t.root), key)
+	return t.getVal(t.Get(t.Root), key)
 }
 
 func (t *BTree) Insert(key, val []byte) {
 	// if there is no root node
-	if t.root == 0 {
+	if t.Root == 0 {
 		// create a new node
 		new := BNode(make([]byte, PAGE_SIZE))
 		new.setHeader(BNODE_LEAF, 2)
@@ -537,13 +537,13 @@ func (t *BTree) Insert(key, val []byte) {
 		nodeAppendKV(new, 1, 0, key, val)
 
 		// assign new node as root of tree
-		t.root = t.new(new)
+		t.Root = t.New(new)
 		return
 	}
 
-	node := treeInsert(t, t.get(t.root), key, val)
+	node := treeInsert(t, t.Get(t.Root), key, val)
 	nsplit, split, _, _ := nodeSplit3(node)
-	t.del(t.root)
+	t.Del(t.Root)
 
 	if nsplit > 1 {
 		// root node is split
@@ -552,13 +552,13 @@ func (t *BTree) Insert(key, val []byte) {
 		newRoot.setHeader(BNODE_NODE, nsplit)
 		for i := 0; i < int(nsplit); i++ {
 			childNode := split[i]
-			ptr, key := t.new(childNode), childNode.getKey(0)
+			ptr, key := t.New(childNode), childNode.getKey(0)
 			nodeAppendKV(newRoot, uint16(i), ptr, key, nil)
 		}
-		t.root = t.new(newRoot)
+		t.Root = t.New(newRoot)
 	} else {
 		// root node is not split
-		t.root = t.new(split[0])
+		t.Root = t.New(split[0])
 	}
 }
 
@@ -578,7 +578,7 @@ func shouldMerge(
 
 	if idx > 0 {
 		// get the left sibiling of the updated node
-		leftSib := BNode(tree.get(node.getptr(idx - 1)))
+		leftSib := BNode(tree.Get(node.getptr(idx - 1)))
 
 		// size of the merged node
 		merged := leftSib.nbytes() + updated.nbytes() - HEADER
@@ -590,7 +590,7 @@ func shouldMerge(
 	// check if right sibiling exists
 	if idx+1 < node.nkeys() {
 		// get the right sibiling of the updated node
-		rightSib := BNode(tree.get(node.getptr(idx + 1)))
+		rightSib := BNode(tree.Get(node.getptr(idx + 1)))
 
 		// size of the merged node
 		merged := rightSib.nbytes() + updated.nbytes() - HEADER
@@ -614,25 +614,25 @@ func nodeMerge(new, left, right BNode) {
 }
 
 func (tree *BTree) Delete(key []byte) bool {
-	if tree.root == 0 {
+	if tree.Root == 0 {
 		log.Panicln("root node is empty")
 		return false
 	}
 
-	updatedNode := treeDelete(tree, BNode(tree.get(tree.root)), key)
+	updatedNode := treeDelete(tree, BNode(tree.Get(tree.Root)), key)
 
 	// key not found
 	if len(updatedNode) == 0 {
 		return false
 	}
 
-	tree.del(tree.root)
+	tree.Del(tree.Root)
 
 	if updatedNode.btype() == BNODE_NODE && updatedNode.nkeys() == 1 {
 		// make child as the new root
-		tree.root = updatedNode.getptr(0)
+		tree.Root = updatedNode.getptr(0)
 	} else {
-		tree.root = tree.new(updatedNode)
+		tree.Root = tree.New(updatedNode)
 	}
 	return true
 }
@@ -663,7 +663,7 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 	kptr := node.getptr(idx)
 
 	// delete the leaf node
-	updated := treeDelete(tree, tree.get(kptr), key)
+	updated := treeDelete(tree, tree.Get(kptr), key)
 	// node not found
 	if len(updated) == 0 {
 		return BNode{}
@@ -679,8 +679,8 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 		nodeMerge(merged, sibiling, updated)
 
 		// delete old sibiling node
-		tree.del(node.getptr(idx - 1))
-		nodeReplace2Kid(new, node, idx-1, tree.new(merged), merged.getKey(0))
+		tree.Del(node.getptr(idx - 1))
+		nodeReplace2Kid(new, node, idx-1, tree.New(merged), merged.getKey(0))
 
 	case mergeDir > 0:
 		// merge two nodes
@@ -688,8 +688,8 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 		nodeMerge(merged, sibiling, updated)
 
 		// delete old sibiling node
-		tree.del(node.getptr(idx + 1))
-		nodeReplace2Kid(new, node, idx-1, tree.new(merged), merged.getKey(0))
+		tree.Del(node.getptr(idx + 1))
+		nodeReplace2Kid(new, node, idx-1, tree.New(merged), merged.getKey(0))
 
 	case mergeDir == 0 && updated.nkeys() == 0:
 		// child node is empty

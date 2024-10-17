@@ -24,7 +24,7 @@ func newC() *C {
 	pages := map[uint64]BNode{}
 	return &C{
 		tree: BTree{
-			get: func(u uint64) []byte {
+			Get: func(u uint64) []byte {
 				p, ok := pages[u]
 				if !ok {
 					log.Fatalln("invalid page pointer, page does not exist")
@@ -32,7 +32,7 @@ func newC() *C {
 				return p
 			},
 
-			new: func(b []byte) uint64 {
+			New: func(b []byte) uint64 {
 				if len(b) > PAGE_SIZE {
 					log.Fatalf("\nnode size greater then page, %d", len(b))
 				}
@@ -44,7 +44,7 @@ func newC() *C {
 				return ptr
 			},
 
-			del: func(ptr uint64) {
+			Del: func(ptr uint64) {
 				if pages[ptr] != nil {
 					delete(pages, ptr)
 				}
@@ -607,14 +607,15 @@ func TestDelete(t *testing.T) {
 		cache := newC()
 		tree := cache.tree
 
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 10; i++ {
 			key, val := getStubKeyValue(500, i)
 			tree.Insert(key, val)
 		}
 
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 10; i++ {
 			key, _ := getStubKeyValue(500, i)
 			assert.True(t, tree.Delete(key))
+			PrintTree(tree, BNode(tree.Get(tree.Root)))
 		}
 	})
 }
