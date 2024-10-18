@@ -9,11 +9,12 @@ import (
 	"os"
 )
 
-const DB_SIG = "ThankToBuildYourOwnDbFromScratch"
+const DB_SIG = "Thanks-BuildYourOwnDbFromScratch"
 
 type Kv struct {
 	Path string // path to the db file
 
+	// internals
 	tree btree.BTree // Btree
 	fp   *os.File    // pointer to file
 	mmap mmap.Mmap   // mmap of the file
@@ -34,11 +35,11 @@ func (k *Kv) Open() error {
 	}
 
 	k.mmap = mmap.Mmap{
-		Fp:     fp,
-		Total:  len(chunk),
-		Chunks: [][]byte{chunk},
-		File:   sz,
-		Temp:   [][]byte{},
+		Fp:        fp,
+		ChunkSize: len(chunk),
+		Chunks:    [][]byte{chunk},
+		FileSize:  sz,
+		Updates:   map[uint64][]byte{},
 	}
 
 	// initalize btree functions
@@ -87,9 +88,18 @@ func flushpages(k *Kv) error {
 
 // writePages extends the file
 // and extends the mmap and copies the temp
-// page into the disk
+// pages into the disk
 func writePages(k *Kv) error {
-	npages := k.mmap.Flushed + uint64(len(k.mmap.Temp))
+
+	freed := []uint64{}
+	for ptr, page := range k.mmap.Updates {
+		if page == nil {
+			freed = append(freed, ptr)
+		}
+	}
+	k.mmap.Free.Update(k.mmap.NFree, freed)
+
+	npages := uint64(len(k.mmap.Updates))
 	err := k.mmap.ExtendFile(int(npages))
 	if err != nil {
 		return fmt.Errorf("extending file: %w", err)
@@ -101,16 +111,16 @@ func writePages(k *Kv) error {
 	}
 
 	// copy the temp pages to the disk
-	for i, page := range k.mmap.Temp {
-		ptr := k.mmap.Flushed + uint64(i)
-		copy(k.mmap.PageGet(ptr), page)
+	for ptr, page := range k.mmap.Updates {
+		if page != nil {
+			copy(mmap.PageGetMapped(&k.mmap, ptr), page)
+		}
 	}
-
 	return nil
 }
 
 // syncPages flushes the data to the disk
-// and them updates the master page
+// and then updates the master page
 func syncPages(k *Kv) error {
 	// flush the data to the disk
 	err := k.fp.Sync()
@@ -119,8 +129,8 @@ func syncPages(k *Kv) error {
 	}
 
 	// update Flushed and Temp
-	k.mmap.Flushed += uint64(len(k.mmap.Temp))
-	k.mmap.Temp = k.mmap.Temp[:0]
+	// k.mmap.Flushed += uint64(len(k.mmap.Temp))
+	// k.mmap.Temp = k.mmap.Temp[:0]
 
 	err = masterStore(k)
 	if err != nil {
@@ -141,7 +151,7 @@ func syncPages(k *Kv) error {
 func masterLoad(db *Kv) error {
 	// file is not present
 	// allocate a page for master on the first write
-	if db.mmap.File == 0 {
+	if db.mmap.FileSize == 0 {
 		db.mmap.Flushed = 1
 		return nil
 	}
@@ -158,7 +168,7 @@ func masterLoad(db *Kv) error {
 	}
 
 	// check if pages used is valid
-	if used < 1 || used > uint64(db.mmap.File)/btree.PAGE_SIZE {
+	if used < 1 || used > uint64(db.mmap.FileSize)/btree.PAGE_SIZE {
 		return fmt.Errorf("invalid master page, incorrect page_used")
 	}
 

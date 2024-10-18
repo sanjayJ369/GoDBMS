@@ -2,20 +2,27 @@ package mmap
 
 import (
 	"dbms/btree"
+	"dbms/freelist"
 	"fmt"
 	"os"
 	"syscall"
 )
 
 type Mmap struct {
-	File    int
-	Total   int
-	Chunks  [][]byte
-	Fp      *os.File
-	Flushed uint64
-	Temp    [][]byte
+	FileSize  int               // size of the file
+	ChunkSize int               // size of currently mapped chunks
+	Chunks    [][]byte          // pages that are mapped to disk
+	Fp        *os.File          // pointer to the file
+	Flushed   uint64            // number of pages flushed to the disk
+	NFree     int               // number of pages taken from the list
+	NAppend   int               // number of pages to be appended
+	Free      freelist.FreeList // free linst
+	// allocated and deallocated pages keyed by the pointer
+	// nil value dentes a deallocated page
+	Updates map[uint64][]byte
 }
 
+// Close unmaps the mapped file
 func (m *Mmap) Close() {
 	for _, chunk := range m.Chunks {
 		err := syscall.Munmap(chunk)
@@ -25,10 +32,13 @@ func (m *Mmap) Close() {
 	}
 }
 
+// ExtendFile takes in the desired number of pages (npages) as input
+// and extended the file to fit in npages, it extendsfile using
+// fallocate and extends the file incrementally to void frequent file extention
 func (m *Mmap) ExtendFile(npages int) error {
 	// number is pages present is greater the required file size
-	// not need to extend the file
-	filePages := m.File / btree.PAGE_SIZE
+	// no need to extend the file
+	filePages := m.FileSize / btree.PAGE_SIZE
 	if filePages > npages {
 		return nil
 	}
@@ -47,30 +57,40 @@ func (m *Mmap) ExtendFile(npages int) error {
 	if err != nil {
 		return fmt.Errorf("extending file: %w", err)
 	}
-	m.File = newFileSize
+	m.FileSize = newFileSize
 	return nil
 }
 
+// ExtendMmap extendes the mmap by creating a new mmap
 func (m *Mmap) ExtendMmap(npages int) error {
 
 	// there is already enough space
-	if m.Total >= npages*btree.PAGE_SIZE {
+	if m.ChunkSize >= npages*btree.PAGE_SIZE {
 		return nil
 	}
 
 	// create a new chunk
-	newChunk, err := syscall.Mmap(m.File, int64(m.Total), m.Total,
+	newChunk, err := syscall.Mmap(m.FileSize, int64(m.ChunkSize), m.ChunkSize,
 		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		return fmt.Errorf("mapping new chunk: %w", err)
 	}
 
-	m.Total += m.Total
+	m.ChunkSize += m.ChunkSize
 	m.Chunks = append(m.Chunks, newChunk)
 	return nil
 }
 
+// PageGet takes in page index and parameter
+// it traverses though the chunks to find the right page
 func (m *Mmap) PageGet(pgIdx uint64) []byte {
+	if page, ok := m.Updates[pgIdx]; ok {
+		return page
+	}
+	return PageGetMapped(m, pgIdx)
+}
+
+func PageGetMapped(m *Mmap, pgIdx uint64) []byte {
 	start := uint64(0)
 	for _, chunk := range m.Chunks {
 		npages := len(chunk) / btree.PAGE_SIZE
@@ -85,20 +105,31 @@ func (m *Mmap) PageGet(pgIdx uint64) []byte {
 	panic("invalid page index")
 }
 
+// PageNew allocate a new page in memory
+// and added it to the temp pages
 func (m *Mmap) PageNew(node []byte) uint64 {
-	// TODO: reuse the deallocated page
+
 	if len(node) > btree.PAGE_SIZE {
 		panic("node size is greater then the page size")
 	}
 
+	ptr := uint64(0)
+	// if there are freepages left use the freepage
+	if m.NFree < int(m.Free.Total()) {
+		ptr = m.Free.Get(m.NFree)
+		m.NFree++
+	} else {
+		ptr = m.Flushed + uint64(m.NAppend)
+		m.NAppend++
+	}
+
 	// allocate a new page
-	ptr := m.Flushed + uint64(len(m.Temp))
-	m.Temp = append(m.Temp, node)
+	m.Updates[ptr] = node
 	return ptr
 }
 
 func (m *Mmap) PageDel(ptr uint64) {
-	// TODO: deallocate the page
+	m.Updates[ptr] = nil
 }
 
 func MmapInit(fileloc string) (int, []byte, error) {
