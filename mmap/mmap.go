@@ -17,6 +17,7 @@ type Mmap struct {
 }
 
 func (m *Mmap) Close() {
+	syscall.Fsync(int(m.Fp.Fd()))
 	for _, chunk := range m.Chunks {
 		err := syscall.Munmap(chunk)
 		if err != nil {
@@ -58,8 +59,12 @@ func (m *Mmap) ExtendMmap(npages int) error {
 		return nil
 	}
 
+	// skip the master page
+	if m.Total == 0 {
+		m.Total = btree.PAGE_SIZE
+	}
 	// create a new chunk
-	newChunk, err := syscall.Mmap(m.File, int64(m.Total), m.Total,
+	newChunk, err := syscall.Mmap(int(m.Fp.Fd()), int64(m.Total), m.Total,
 		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		return fmt.Errorf("mapping new chunk: %w", err)
@@ -72,6 +77,7 @@ func (m *Mmap) ExtendMmap(npages int) error {
 
 func (m *Mmap) PageGet(pgIdx uint64) []byte {
 	start := uint64(0)
+	pgIdx -= 1
 	for _, chunk := range m.Chunks {
 		npages := len(chunk) / btree.PAGE_SIZE
 		end := start + uint64(npages)
@@ -128,8 +134,9 @@ func MmapInit(fileloc string) (int, []byte, error) {
 		flag   = defines if the updates made to the mmap is visiable to other
 				 processes mapped to the same region
 	*/
-	chunk, err := syscall.Mmap(int(fp.Fd()), 0,
+	chunk, err := syscall.Mmap(int(fp.Fd()), btree.PAGE_SIZE,
 		size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+
 	if err != nil {
 		return 0, nil, fmt.Errorf("maping file into memory: %w", err)
 	}

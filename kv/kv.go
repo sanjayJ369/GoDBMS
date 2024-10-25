@@ -5,6 +5,7 @@ import (
 	"dbms/btree"
 	"dbms/mmap"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -17,6 +18,47 @@ type Kv struct {
 	tree btree.BTree // Btree
 	fp   *os.File    // pointer to file
 	mmap mmap.Mmap   // mmap of the file
+}
+
+func NewKv(loc string) (*Kv, error) {
+
+	newfile := false
+	if _, err := os.Stat(loc); errors.Is(err, os.ErrNotExist) {
+		newfile = true
+	}
+
+	fp, err := os.OpenFile(loc, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("opening file: %w", err)
+	}
+
+	var k *Kv
+	if newfile {
+		k = &Kv{
+			Path: loc,
+			tree: btree.BTree{},
+			fp:   fp,
+			mmap: mmap.Mmap{
+				Fp:      fp,
+				Flushed: 1, // masterpage
+			},
+		}
+	} else {
+		k = &Kv{
+			Path: loc,
+		}
+		err := k.Open()
+		if err != nil {
+			return nil, fmt.Errorf("opening kv Store: %w", err)
+		}
+	}
+
+	// initalize btree functions
+	k.tree.Get = k.mmap.PageGet
+	k.tree.Del = k.mmap.PageDel
+	k.tree.New = k.mmap.PageNew
+
+	return k, nil
 }
 
 func (k *Kv) Open() error {
@@ -40,11 +82,6 @@ func (k *Kv) Open() error {
 		File:   sz,
 		Temp:   [][]byte{},
 	}
-
-	// initalize btree functions
-	k.tree.Get = k.mmap.PageGet
-	k.tree.Del = k.mmap.PageDel
-	k.tree.New = k.mmap.PageNew
 
 	err = masterLoad(k)
 	if err != nil {
@@ -103,7 +140,8 @@ func writePages(k *Kv) error {
 	// copy the temp pages to the disk
 	for i, page := range k.mmap.Temp {
 		ptr := k.mmap.Flushed + uint64(i)
-		copy(k.mmap.PageGet(ptr), page)
+		dskpage := k.mmap.PageGet(ptr)
+		copy(dskpage, page)
 	}
 
 	return nil
@@ -147,7 +185,11 @@ func masterLoad(db *Kv) error {
 	}
 
 	// load master page
-	data := db.mmap.Chunks[0]
+	data := make([]byte, btree.PAGE_SIZE)
+	_, err := db.fp.Read(data)
+	if err != nil {
+		return fmt.Errorf("reading file: %w", err)
+	}
 	sig := data[:32]
 	root := binary.LittleEndian.Uint64(data[32:])
 	used := binary.LittleEndian.Uint64(data[40:])
