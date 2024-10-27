@@ -5,12 +5,16 @@ import (
 	"dbms/util"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSetGet(t *testing.T) {
+
+	count := 5000
+	size := 500
 
 	loc := util.NewTempFileLoc()
 	kv, err := NewKv(loc)
@@ -26,25 +30,35 @@ func TestSetGet(t *testing.T) {
 		assert.Equal(t, "world", string(val), "getting value")
 	})
 
-	t.Run("set and get the 100000 kv pairs", func(t *testing.T) {
-		for i := 0; i < 5000; i++ {
-			val := make([]byte, 500)
+	t.Run("set and get the 5000 kv pairs", func(t *testing.T) {
+
+		startTime := time.Now()
+		for i := 0; i < count; i++ {
+			val := make([]byte, size)
 			copy(val, fmt.Sprintf("this is val%d", i))
 			key := []byte(fmt.Sprintf("key%d", i))
 
 			err := kv.Set(key, val)
 			require.NoError(t, err, "setting new kvpair")
+		}
+		endTime := time.Now()
 
+		for i := 0; i < count; i++ {
+			val := make([]byte, size)
+			copy(val, fmt.Sprintf("this is val%d", i))
+			key := []byte(fmt.Sprintf("key%d", i))
 			got, err := kv.Get(key)
 			require.NoError(t, err, "getting value")
 			assert.Equal(t, val, got, "getting value")
 		}
+
 		fmt.Println("root node:")
 		btree.PrintNode(kv.tree.Get(kv.tree.Root))
 
 		fmt.Println("\ntree:")
 		btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
-		fmt.Println(kv.tree.Root)
+
+		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
 		kv.Close()
 	})
 
@@ -52,14 +66,8 @@ func TestSetGet(t *testing.T) {
 
 		kv, err = NewKv(loc)
 		require.NoError(t, err, "opening kv")
-		fmt.Println("root node:")
-		btree.PrintNode(kv.tree.Get(kv.tree.Root))
-
-		fmt.Println("\ntree:")
-		btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
-		fmt.Println(kv.tree.Root)
-		for i := 0; i < 5000; i++ {
-			val := make([]byte, 500)
+		for i := 0; i < count; i++ {
+			val := make([]byte, size)
 			copy(val, fmt.Sprintf("this is val%d", i))
 			key := []byte(fmt.Sprintf("key%d", i))
 
