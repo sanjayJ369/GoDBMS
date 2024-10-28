@@ -3,6 +3,7 @@ package freelist
 import (
 	"dbms/btree"
 	"encoding/binary"
+	"fmt"
 )
 
 const (
@@ -12,8 +13,9 @@ const (
 	FREELIST_NEXT    = 8
 	FREELIST_HEADER  = 2 + 2 + 8 + 8
 	FREELIST_POINTER = 8
-	FREELIST_CAP     = (btree.PAGE_SIZE - FREELIST_HEADER) / 8
 )
+
+var FREELIST_CAP = (btree.PAGE_SIZE - FREELIST_HEADER) / 8
 
 // node write frame
 // \ type | size | total |  next  |    pointers     |
@@ -26,6 +28,24 @@ type Fl struct {
 	get func(uint64) []byte
 	use func(uint64, []byte)
 	new func([]byte) uint64
+}
+
+func NewFl(get func(uint64) []byte, use func(uint64,
+	[]byte), new func([]byte) uint64) *Fl {
+	fl := &Fl{
+		get: get,
+		use: use,
+		new: new,
+	}
+
+	head := make([]byte, btree.PAGE_SIZE)
+	flnSetHeader(head, 0, 0)
+	flnSetTotal(head, 0)
+	headptr := fl.new(head)
+
+	fl.head = headptr
+
+	return fl
 }
 
 func (f *Fl) Get(topn int) uint64 {
@@ -48,6 +68,21 @@ func (f *Fl) Total() uint64 {
 	return flnGetTotal(head)
 }
 
+func printNode(fl *Fl) {
+	node := fl.get(fl.head)
+	fmt.Println(fl.head)
+	for node != nil {
+		size := flnSize(node)
+
+		for i := 0; i < size; i++ {
+			ptr := flnPtr(node, i)
+			fmt.Println("\t", ptr)
+		}
+		fmt.Println(flnNext(node))
+		node = fl.get(flnNext(node))
+	}
+}
+
 func (f *Fl) Update(popn int, freed []uint64) {
 	if popn == 0 && len(freed) == 0 {
 		return
@@ -67,6 +102,7 @@ func (f *Fl) Update(popn int, freed []uint64) {
 			popn -= flnSize(node)
 		} else {
 			remain := flnSize(node) - popn
+			popn = 0
 			/*
 				here, the pointers in the page are handled a bit
 				differently, inside a new it does not matter in which order
@@ -100,7 +136,11 @@ func (f *Fl) Update(popn int, freed []uint64) {
 	}
 
 	if len(reuse)*FREELIST_CAP < len(freed) {
-		panic("not enough space to stored freed pages")
+		// add additional pages to stored the freed pointer
+		for len(reuse)*FREELIST_CAP < len(freed) {
+			newNode := f.new(make([]byte, btree.PAGE_SIZE))
+			reuse = append(reuse, newNode)
+		}
 	}
 
 	flPush(f, freed, reuse)
@@ -110,7 +150,7 @@ func (f *Fl) Update(popn int, freed []uint64) {
 func flPush(f *Fl, freed []uint64, reuse []uint64) {
 	// there still some elements to insert
 	for len(freed) > 0 {
-		new := make([]byte, btree.BNODE_NODE)
+		new := make([]byte, btree.PAGE_SIZE)
 
 		size := len(freed)
 		if size > FREELIST_CAP {
