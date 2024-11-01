@@ -1,9 +1,12 @@
 package kv
 
 import (
+	"bufio"
 	"dbms/btree"
 	"dbms/util"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ import (
 
 func TestSetGet(t *testing.T) {
 
-	count := 5000
+	count := 10
 	size := 500
 
 	loc := util.NewTempFileLoc()
@@ -52,11 +55,12 @@ func TestSetGet(t *testing.T) {
 			assert.Equal(t, val, got, "getting value")
 		}
 
-		fmt.Println("root node:")
+		fmt.Println("root node:", kv.tree.Root)
 		btree.PrintNode(kv.tree.Get(kv.tree.Root))
+		printPages(kv.Path)
 
-		fmt.Println("\ntree:")
-		btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
+		// fmt.Println("\ntree:")
+		// btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
 
 		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
 		kv.Close()
@@ -66,6 +70,11 @@ func TestSetGet(t *testing.T) {
 
 		kv, err = NewKv(loc)
 		require.NoError(t, err, "opening kv")
+
+		fmt.Println("root node:", kv.tree.Root)
+		btree.PrintNode(kv.tree.Get(kv.tree.Root))
+		printPages(kv.Path)
+
 		for i := 0; i < count; i++ {
 			val := make([]byte, size)
 			copy(val, fmt.Sprintf("this is val%d", i))
@@ -76,4 +85,35 @@ func TestSetGet(t *testing.T) {
 			assert.Equal(t, val, got, "getting value")
 		}
 	})
+}
+
+func printPages(file string) {
+	fp, err := os.Open(file)
+	if err != nil {
+		log.Fatalf("opening file: %s", err.Error())
+	}
+
+	fmt.Println("\nfile pages:")
+	buf := make([]byte, btree.PAGE_SIZE)
+	fi, err := fp.Stat()
+	if err != nil {
+		log.Fatalf("getting file stats: %s", err.Error())
+	}
+
+	if fi.Size()%btree.PAGE_SIZE != 0 {
+		log.Fatal("file size of not a multiple of page size")
+	}
+
+	npages := fi.Size() / btree.PAGE_SIZE
+
+	reader := bufio.NewReader(fp)
+	for i := 0; i < int(npages); i++ {
+		_, err := reader.Read(buf)
+		if err != nil {
+			log.Fatalf("reading data from file into buffer: %s", err.Error())
+		}
+
+		btree.PrintNode(btree.BNode(buf))
+		fmt.Println()
+	}
 }

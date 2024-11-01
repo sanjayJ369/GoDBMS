@@ -2,18 +2,21 @@ package mmap
 
 import (
 	"dbms/btree"
+	"dbms/freelist"
 	"fmt"
 	"os"
 	"syscall"
 )
 
 type Mmap struct {
-	File    int
-	Total   int
-	Chunks  [][]byte
-	Fp      *os.File
-	Flushed uint64
-	Temp    [][]byte
+	File     int
+	Total    int
+	Chunks   [][]byte
+	Fp       *os.File
+	Flushed  uint64
+	NAppend  uint64
+	Updates  map[uint64][]byte
+	FreeList freelist.Fl
 }
 
 func (m *Mmap) Close() {
@@ -59,25 +62,37 @@ func (m *Mmap) ExtendMmap(npages int) error {
 		return nil
 	}
 
+	var newChunk []byte
+	var err error
 	// skip the master page
 	if m.Total == 0 {
-		m.Total = btree.PAGE_SIZE
+		newChunk, err = syscall.Mmap(int(m.Fp.Fd()), 0, 2*btree.PAGE_SIZE,
+			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		m.Total += btree.PAGE_SIZE * 2
+	} else {
+		newChunk, err = syscall.Mmap(int(m.Fp.Fd()), int64(m.Total), m.Total,
+			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		m.Total += m.Total
 	}
-	// create a new chunk
-	newChunk, err := syscall.Mmap(int(m.Fp.Fd()), int64(m.Total), m.Total,
-		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+
 	if err != nil {
 		return fmt.Errorf("mapping new chunk: %w", err)
 	}
 
-	m.Total += m.Total
 	m.Chunks = append(m.Chunks, newChunk)
 	return nil
 }
 
 func (m *Mmap) PageGet(pgIdx uint64) []byte {
+	if node, ok := m.Updates[pgIdx]; ok {
+		return node
+	}
+
+	return m.PageReadFile(pgIdx)
+}
+
+func (m *Mmap) PageReadFile(pgIdx uint64) []byte {
 	start := uint64(0)
-	pgIdx -= 1
 	for _, chunk := range m.Chunks {
 		npages := len(chunk) / btree.PAGE_SIZE
 		end := start + uint64(npages)
@@ -91,15 +106,27 @@ func (m *Mmap) PageGet(pgIdx uint64) []byte {
 	panic("invalid page index")
 }
 
+func (m *Mmap) PageAlloc(node []byte) uint64 {
+	// reuse page
+	if ptr := m.FreeList.PopHead(); ptr != 0 {
+		m.Updates[ptr] = node
+		return ptr
+	}
+
+	// create a new page
+	return m.PageNew(node)
+}
+
 func (m *Mmap) PageNew(node []byte) uint64 {
-	// TODO: reuse the deallocated page
+
 	if len(node) > btree.PAGE_SIZE {
 		panic("node size is greater then the page size")
 	}
 
 	// allocate a new page
-	ptr := m.Flushed + uint64(len(m.Temp))
-	m.Temp = append(m.Temp, node)
+	ptr := m.Flushed + m.NAppend
+	m.NAppend += 1
+	m.Updates[ptr] = node
 	return ptr
 }
 
@@ -134,7 +161,7 @@ func MmapInit(fileloc string) (int, []byte, error) {
 		flag   = defines if the updates made to the mmap is visiable to other
 				 processes mapped to the same region
 	*/
-	chunk, err := syscall.Mmap(int(fp.Fd()), btree.PAGE_SIZE,
+	chunk, err := syscall.Mmap(int(fp.Fd()), 0,
 		size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 
 	if err != nil {

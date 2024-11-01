@@ -412,7 +412,10 @@ func (l *linkedList) dequeue() BNode {
 }
 
 func PrintNode(node BNode) {
-
+	if node.btype() != BNODE_LEAF && node.btype() != BNODE_NODE {
+		fmt.Print("nil page")
+		return
+	}
 	for i := uint16(0); i < node.nkeys(); i++ {
 		fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
 			func(r rune) bool {

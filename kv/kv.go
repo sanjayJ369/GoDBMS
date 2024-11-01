@@ -10,7 +10,7 @@ import (
 	"os"
 )
 
-const DB_SIG = "ThankToBuildYourOwnDbFromScratch"
+const DB_SIG = "Thanks,BuildYourOwnDbFromScratch"
 
 type Kv struct {
 	Path string // path to the db file
@@ -41,6 +41,7 @@ func NewKv(loc string) (*Kv, error) {
 			mmap: mmap.Mmap{
 				Fp:      fp,
 				Flushed: 1, // masterpage
+				Updates: map[uint64][]byte{},
 			},
 		}
 	} else {
@@ -76,11 +77,11 @@ func (k *Kv) Open() error {
 	}
 
 	k.mmap = mmap.Mmap{
-		Fp:     fp,
-		Total:  len(chunk),
-		Chunks: [][]byte{chunk},
-		File:   sz,
-		Temp:   [][]byte{},
+		Fp:      fp,
+		Total:   len(chunk),
+		Chunks:  [][]byte{chunk},
+		File:    sz,
+		Updates: map[uint64][]byte{},
 	}
 
 	err = masterLoad(k)
@@ -126,7 +127,8 @@ func flushpages(k *Kv) error {
 // and extends the mmap and copies the temp
 // page into the disk
 func writePages(k *Kv) error {
-	npages := k.mmap.Flushed + uint64(len(k.mmap.Temp))
+	npages := k.mmap.Flushed + k.mmap.NAppend
+
 	err := k.mmap.ExtendFile(int(npages))
 	if err != nil {
 		return fmt.Errorf("extending file: %w", err)
@@ -138,10 +140,10 @@ func writePages(k *Kv) error {
 	}
 
 	// copy the temp pages to the disk
-	for i, page := range k.mmap.Temp {
-		ptr := k.mmap.Flushed + uint64(i)
-		dskpage := k.mmap.PageGet(ptr)
+	for ptr, page := range k.mmap.Updates {
+		dskpage := k.mmap.PageReadFile(ptr)
 		copy(dskpage, page)
+		delete(k.mmap.Updates, ptr)
 	}
 
 	return nil
@@ -157,8 +159,8 @@ func syncPages(k *Kv) error {
 	}
 
 	// update Flushed and Temp
-	k.mmap.Flushed += uint64(len(k.mmap.Temp))
-	k.mmap.Temp = k.mmap.Temp[:0]
+	k.mmap.Flushed += k.mmap.NAppend
+	k.mmap.NAppend = 0
 
 	err = masterStore(k)
 	if err != nil {
