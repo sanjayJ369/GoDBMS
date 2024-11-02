@@ -193,6 +193,8 @@ func leafInsert(new BNode, old BNode, idx uint16, key, val []byte) {
 
 // leafUpdate updates the value of a key at a given index
 func leafUpdate(new BNode, old BNode, idx uint16, key, val []byte) {
+
+	new.setHeader(old.btype(), old.nkeys())
 	// copy upto index
 	nodeAppendRange(new, old, 0, 0, idx)
 
@@ -461,7 +463,6 @@ func PrintTree(tree BTree, node BNode) {
 func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 	// BNode size can be more then one page
 	new := BNode(make([]byte, 2*PAGE_SIZE))
-
 	// check where to insert
 	idx := nodeLookupLE(node, key)
 

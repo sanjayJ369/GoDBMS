@@ -1,12 +1,14 @@
 package kv
 
 import (
+	"bufio"
 	"bytes"
 	"dbms/btree"
 	"dbms/mmap"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -255,4 +257,40 @@ func masterStore(db *Kv) error {
 	}
 
 	return nil
+}
+
+func PrintPages(file string) {
+	fp, err := os.Open(file)
+	if err != nil {
+		log.Fatalf("opening file: %s", err.Error())
+	}
+
+	fmt.Println("\nfile pages:")
+	buf := make([]byte, btree.PAGE_SIZE)
+	fi, err := fp.Stat()
+	if err != nil {
+		log.Fatalf("getting file stats: %s", err.Error())
+	}
+
+	if fi.Size()%btree.PAGE_SIZE != 0 {
+		log.Fatal("file size of not a multiple of page size")
+	}
+
+	npages := fi.Size() / btree.PAGE_SIZE
+
+	reader := bufio.NewReader(fp)
+	for i := 0; i < int(npages); i++ {
+		if i == 0 {
+			fmt.Println("master page")
+			reader.Read(buf)
+			continue
+		}
+		_, err := reader.Read(buf)
+		if err != nil {
+			log.Fatalf("reading data from file into buffer: %s", err.Error())
+		}
+
+		btree.PrintNode(btree.BNode(buf))
+		fmt.Println()
+	}
 }
