@@ -16,7 +16,7 @@ import (
 
 func TestSetGet(t *testing.T) {
 
-	count := 10
+	count := 5000
 	size := 500
 
 	loc := util.NewTempFileLoc()
@@ -55,13 +55,6 @@ func TestSetGet(t *testing.T) {
 			assert.Equal(t, val, got, "getting value")
 		}
 
-		fmt.Println("root node:", kv.tree.Root)
-		btree.PrintNode(kv.tree.Get(kv.tree.Root))
-		printPages(kv.Path)
-
-		// fmt.Println("\ntree:")
-		// btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
-
 		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
 		kv.Close()
 	})
@@ -70,10 +63,6 @@ func TestSetGet(t *testing.T) {
 
 		kv, err = NewKv(loc)
 		require.NoError(t, err, "opening kv")
-
-		fmt.Println("root node:", kv.tree.Root)
-		btree.PrintNode(kv.tree.Get(kv.tree.Root))
-		printPages(kv.Path)
 
 		for i := 0; i < count; i++ {
 			val := make([]byte, size)
@@ -108,6 +97,11 @@ func printPages(file string) {
 
 	reader := bufio.NewReader(fp)
 	for i := 0; i < int(npages); i++ {
+		if i == 0 {
+			fmt.Println("master page")
+			reader.Read(buf)
+			continue
+		}
 		_, err := reader.Read(buf)
 		if err != nil {
 			log.Fatalf("reading data from file into buffer: %s", err.Error())

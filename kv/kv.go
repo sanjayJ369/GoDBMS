@@ -57,7 +57,12 @@ func NewKv(loc string) (*Kv, error) {
 	// initalize btree functions
 	k.tree.Get = k.mmap.PageGet
 	k.tree.Del = k.mmap.PageDel
-	k.tree.New = k.mmap.PageNew
+	k.tree.New = k.mmap.PageAlloc
+
+	// initalize freelist functions
+	k.mmap.FreeList.Get = k.mmap.PageGet
+	k.mmap.FreeList.New = k.mmap.PageNew
+	k.mmap.FreeList.Set = k.mmap.PageWrite
 
 	return k, nil
 }
@@ -176,8 +181,12 @@ func syncPages(k *Kv) error {
 }
 
 // master page format
-// |   signal  | ptr (root)| page used |
-// | sig (32B) | root (8B) |    8B     |
+// |   signal  | ptr (root)| page used | fl-headpage | fl-headSeq | ...
+// | sig (32B) | root (8B) |    8B     |    8B       |    8B      |
+//
+// ... | fl-tailPage |   fl-tailSeq |
+//     | 	8B	     | 		8B	    |
+
 func masterLoad(db *Kv) error {
 	// file is not present
 	// allocate a page for master on the first write
@@ -196,6 +205,17 @@ func masterLoad(db *Kv) error {
 	root := binary.LittleEndian.Uint64(data[32:])
 	used := binary.LittleEndian.Uint64(data[40:])
 
+	// load freelist data
+	headPage := binary.LittleEndian.Uint64(data[48:])
+	headSeq := binary.LittleEndian.Uint64(data[56:])
+	tailPage := binary.LittleEndian.Uint64(data[64:])
+	tailSeq := binary.LittleEndian.Uint64(data[72:])
+
+	db.mmap.FreeList.HeadPage = headPage
+	db.mmap.FreeList.HeadSeq = headSeq
+	db.mmap.FreeList.TailPage = tailPage
+	db.mmap.FreeList.TailSeq = tailSeq
+
 	// check signature
 	if !bytes.Equal(sig, []byte(DB_SIG)) {
 		return fmt.Errorf("invalid database signature")
@@ -212,11 +232,22 @@ func masterLoad(db *Kv) error {
 }
 
 func masterStore(db *Kv) error {
-	var data [48]byte
+	var data [80]byte
 
 	copy(data[:32], []byte(DB_SIG))
 	binary.LittleEndian.PutUint64(data[32:], db.tree.Root)
 	binary.LittleEndian.PutUint64(data[40:], db.mmap.Flushed)
+
+	// write freelist data
+	headPage := db.mmap.FreeList.HeadPage
+	headSeq := db.mmap.FreeList.HeadSeq
+	tailPage := db.mmap.FreeList.TailPage
+	tailSeq := db.mmap.FreeList.TailSeq
+
+	binary.LittleEndian.PutUint64(data[48:], headPage)
+	binary.LittleEndian.PutUint64(data[56:], headSeq)
+	binary.LittleEndian.PutUint64(data[64:], tailPage)
+	binary.LittleEndian.PutUint64(data[72:], tailSeq)
 
 	_, err := db.fp.WriteAt(data[:], 0)
 	if err != nil {

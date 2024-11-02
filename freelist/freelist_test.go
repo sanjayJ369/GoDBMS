@@ -74,7 +74,7 @@ func TestFreelist(t *testing.T) {
 			fl.PushTail(ptr)
 		}
 
-		freePages := fl.getUnusedPages()
+		freePages := GetUnusedPages(&fl)
 
 		// first page is popped from the freelist to be reused
 		// for new page
@@ -102,7 +102,7 @@ func TestFreelist(t *testing.T) {
 			assert.Contains(t, ptrs, ptr)
 		}
 
-		head := fl.headPage
+		head := fl.HeadPage
 		ptr := fl.PopHead()
 		assert.Equal(t, head, ptr)
 	})

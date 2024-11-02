@@ -83,6 +83,17 @@ func (m *Mmap) ExtendMmap(npages int) error {
 	return nil
 }
 
+func (m *Mmap) PageWrite(ptr uint64) []byte {
+	if node, ok := m.Updates[ptr]; ok {
+		return node
+	}
+
+	node := make([]byte, btree.PAGE_SIZE)
+	copy(node, m.PageReadFile(ptr))
+	m.Updates[ptr] = node
+	return node
+}
+
 func (m *Mmap) PageGet(pgIdx uint64) []byte {
 	if node, ok := m.Updates[pgIdx]; ok {
 		return node
@@ -131,7 +142,7 @@ func (m *Mmap) PageNew(node []byte) uint64 {
 }
 
 func (m *Mmap) PageDel(ptr uint64) {
-	// TODO: deallocate the page
+	m.FreeList.PushTail(ptr)
 }
 
 func MmapInit(fileloc string) (int, []byte, error) {

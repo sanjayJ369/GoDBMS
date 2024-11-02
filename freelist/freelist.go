@@ -45,10 +45,10 @@ type Fl struct {
 	New func([]byte) uint64
 	Set func(uint64) []byte
 
-	headPage uint64
-	headSeq  uint64
-	tailPage uint64
-	tailSeq  uint64
+	HeadPage uint64
+	HeadSeq  uint64
+	TailPage uint64
+	TailSeq  uint64
 }
 
 func (fl *Fl) PopHead() uint64 {
@@ -63,50 +63,53 @@ func (fl *Fl) PopHead() uint64 {
 func (fl *Fl) PushTail(ptr uint64) {
 	// freelist is empty
 	// add a new page as head
-	if fl.tailPage == 0 {
+	if fl.TailPage == 0 {
 		newNode := FlNode(make([]byte, btree.PAGE_SIZE))
 		newptr := fl.New(newNode)
-		fl.headPage = newptr
-		fl.tailPage = newptr
-		fl.tailSeq = 0
-		fl.headSeq = 0
-		newNode.setPtr(int(fl.tailSeq), ptr)
-		fl.tailSeq++
+		fl.HeadPage = newptr
+		fl.TailPage = newptr
+		fl.TailSeq = 0
+		fl.HeadSeq = 0
+		newNode.setPtr(int(fl.TailSeq), ptr)
+		fl.TailSeq++
 		return
 	}
 
-	node := FlNode(fl.Set(fl.tailPage))
-	node.setPtr(int(seq2Idx(fl.tailSeq)), ptr)
-	fl.tailSeq++
+	node := FlNode(fl.Set(fl.TailPage))
+	node.setPtr(int(seq2Idx(fl.TailSeq)), ptr)
+	fl.TailSeq++
 
 	// if current tailnode is full
 	// add a new page
-	if seq2Idx(fl.tailSeq) == 0 {
+	if seq2Idx(fl.TailSeq) == 0 {
 		next, head := flpop(fl)
 		if next == 0 {
 			// no new pages
 			// append a new page
 			next = fl.New(make([]byte, btree.PAGE_SIZE))
 		}
-		node := FlNode(fl.Get(fl.tailPage))
+		node := FlNode(fl.Get(fl.TailPage))
 		node.setNext(next)
-		fl.tailPage = next
+		fl.TailPage = next
 
 		// if head node is not null
 		// add the node to the lsit
 		if head != 0 {
-			FlNode(fl.Get(fl.tailPage)).setPtr(0, head)
-			fl.tailSeq++
+			FlNode(fl.Get(fl.TailPage)).setPtr(0, head)
+			fl.TailSeq++
 		}
 	}
 }
 
-func (fl *Fl) getUnusedPages() []uint64 {
-	node := FlNode(fl.Get(fl.headPage))
-	seq := fl.headSeq
+func GetUnusedPages(fl *Fl) []uint64 {
+	if fl.HeadPage == 0 {
+		return nil
+	}
+	node := FlNode(fl.Get(fl.HeadPage))
+	seq := fl.HeadSeq
 	freePages := []uint64{}
 
-	for seq < fl.tailSeq {
+	for seq < fl.TailSeq {
 		idx := seq2Idx(seq)
 		seq += 1
 
@@ -121,28 +124,27 @@ func (fl *Fl) getUnusedPages() []uint64 {
 }
 
 func (fl *Fl) reset() {
-	fl.headPage = 0
-	fl.tailPage = 0
-	fl.tailSeq = 0
-	fl.headSeq = 0
+	fl.HeadPage = 0
+	fl.TailPage = 0
+	fl.TailSeq = 0
+	fl.HeadSeq = 0
 }
 
 func flpop(fl *Fl) (ptr uint64, head uint64) {
-	if fl.headSeq == fl.tailSeq {
-		ptr = fl.headPage
-		head = ptr
+	if fl.HeadSeq == fl.TailSeq {
+		ptr = fl.HeadPage
 		fl.reset()
 		return
 	}
-	node := FlNode(fl.Get(fl.headPage))
-	ptr = node.getPtr(seq2Idx(fl.headSeq))
-	fl.headSeq++
+	node := FlNode(fl.Get(fl.HeadPage))
+	ptr = node.getPtr(seq2Idx(fl.HeadSeq))
+	fl.HeadSeq++
 
 	// if at end of node
 	// set head to next node
-	if seq2Idx(fl.headSeq) == 0 {
-		head = fl.headPage
-		fl.headPage = node.getNext()
+	if seq2Idx(fl.HeadSeq) == 0 {
+		head = fl.HeadPage
+		fl.HeadPage = node.getNext()
 	}
 	return
 }
