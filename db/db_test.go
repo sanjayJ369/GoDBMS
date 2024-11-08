@@ -40,9 +40,7 @@ func TestEncodeKey(t *testing.T) {
 }
 
 func TestDecodeVal(t *testing.T) {
-
 	getRecord := (&Record{}).AddI64("id", 1)
-
 	stubRecord := getStubRecord()
 	vals := stubRecord.Vals[1:]
 	data, err := json.Marshal(vals)
@@ -51,6 +49,7 @@ func TestDecodeVal(t *testing.T) {
 	assert.Equal(t, *stubRecord, *getRecord)
 }
 
+// stubStore replicates the implmentation of the acutal kv store
 type stubStore struct {
 	store map[string][]byte
 }
@@ -87,18 +86,85 @@ func TestDBGet(t *testing.T) {
 	db := NewDB("/tmp/", kvstore)
 
 	rec := (&Record{}).AddI64("id", 1)
-	stubRecord := getStubRecord()
 
-	// insert value into db
-	key := encodeKey(stubTableDef.Prefix, stubRecord.Vals[:stubTableDef.Pkeys])
-	val, err := json.Marshal(stubRecord.Vals[stubTableDef.Pkeys:])
-	require.NoError(t, err, "marshalling data")
-	kvstore.store[string(key)] = val
+	// insert value into kv store
+	insertRecord(t, kvstore, getStubRecord())
 
 	ok, err := dbGet(db, stubTableDef, rec)
-	require.NoError(t, err, "getting record ")
+	require.NoError(t, err, "getting record")
 	assert.Equal(t, ok, true)
 	assert.Equal(t, *getStubRecord(), *rec)
+}
+
+func TestGet(t *testing.T) {
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+
+	// create table defination record to insert into db
+	// the table defination will be used by the db.Get method
+	// so inserting the table defination is nessary
+	insertStubTableDefination(t, kvstore, *stubTableDef)
+
+	// insert value into kv store
+	insertRecord(t, kvstore, getStubRecord())
+
+	// get stub record
+	rec := &Record{}
+	rec.AddI64("id", 1)
+	ok, err := db.Get("stub", rec)
+	require.NoError(t, err, "getting stub record")
+	assert.True(t, ok, "getting stub record")
+	// check got and want record
+	assert.Equal(t, *getStubRecord(), *rec, "comparing stub record")
+
+}
+
+func TestDBSet(t *testing.T) {
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+
+	rec := getStubRecord()
+	dbSet(db, stubTableDef, *rec)
+
+	got := &Record{}
+	got.AddI64("id", 1)
+
+	ok, err := dbGet(db, stubTableDef, got)
+	require.NoError(t, err, "getting value")
+	require.Equal(t, true, ok, "getting value")
+
+	assert.Equal(t, rec, got)
+}
+
+func TestUpdate(t *testing.T) {
+
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+
+	t.Run("updating a pre existing value", func(t *testing.T) {
+		// insert table defination, Update function uses table defination
+		// to get the previously inserted value
+		insertStubTableDefination(t, kvstore, *stubTableDef)
+
+		// create another record with updated values
+		updatedStubRec := &Record{}
+		updatedStubRec.AddI64("id", 1)
+		updatedStubRec.AddI64("number", 5)
+		updatedStubRec.AddStr("string", []byte("this is updated string"))
+
+		// update record
+		ok, err := db.Update("stub", *updatedStubRec)
+		require.NoError(t, err, "updaing record")
+		assert.True(t, ok, "updating record")
+
+		// get the updated value
+		gotRec := &Record{}
+		gotRec.AddI64("id", 1)
+		dbGet(db, stubTableDef, gotRec)
+
+		// check if the value is updated
+		assert.Equal(t, *updatedStubRec, *gotRec, "the record is updated")
+	})
 }
 
 func getStubRecord() *Record {
@@ -107,4 +173,30 @@ func getStubRecord() *Record {
 	stubRecord.AddI64("number", 2)
 	stubRecord.AddStr("string", []byte("this is a string"))
 	return stubRecord
+}
+
+func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef TableDef) {
+	t.Helper()
+	// create table defination record to insert into store
+	tdef := stubTableDef
+	tdefRec := &Record{}
+	tdefRec.AddStr("name", []byte("stub"))
+	tdefByte, err := json.Marshal(tdef)
+	require.NoError(t, err, "marshalling table defination")
+	tdefRec.AddStr("def", tdefByte)
+
+	// insert table defination
+	key := encodeKey(TDEF_TABLE.Prefix, tdefRec.Vals[:stubTableDef.Pkeys])
+	val, err := json.Marshal(tdefRec.Vals[stubTableDef.Pkeys:])
+	require.NoError(t, err, "marshalling table defination record")
+	kvstore.store[string(key)] = val
+}
+
+func insertRecord(t testing.TB, kvstore *stubStore, stubRecord *Record) {
+	t.Helper()
+
+	key := encodeKey(stubTableDef.Prefix, stubRecord.Vals[:stubTableDef.Pkeys])
+	val, err := json.Marshal(stubRecord.Vals[stubTableDef.Pkeys:])
+	require.NoError(t, err, "marshalling data")
+	kvstore.store[string(key)] = val
 }

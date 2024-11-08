@@ -8,7 +8,20 @@ import (
 const (
 	TYPE_BYTES = 1
 	TYPE_INT64 = 2
+
+	MODE_UPDATE  = 0 // update only
+	MODE_INSERT  = 1 // insert only
+	MODE_UPDSERT = 2 // update or insert
 )
+
+// update request
+type UpdateReq struct {
+	Key []byte
+	Val []byte
+
+	Added bool // reports if new KV-pair has been added
+	Mode  int
+}
 
 // Value struct is used to store the data type of the column
 // this type of struct is known as tagged union
@@ -110,7 +123,10 @@ func NewDB(path string, kv KVStore) *DB {
 	}
 }
 
-// TODO: interfaces for handling single record in a table
+// Get gets the required rec, here the record(rec) should only contain
+// the primary keys, the columns(attribute) which are not primary keys
+// are added by the Get func into the rec itself
+// the rec can be further used to get the column values
 func (db *DB) Get(table string, rec *Record) (bool, error) {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
@@ -122,10 +138,73 @@ func (db *DB) Get(table string, rec *Record) (bool, error) {
 	return dbGet(db, tdef, rec)
 }
 
-// func (db *DB) Insert(table string, rec Record) (bool, error)
-// func (db *DB) Update(table string, rec Record) (bool, error)
+// Insert only insertes a new record into the table
+// if the value already exists error is thrown
+// here the record should contain all the requied columns along with there values
+// fist 'n' columns should always be the primary keys
+func (db *DB) Insert(table string, rec Record) (bool, error) {
+	tdef, err := getTableDef(db, table)
+	if err != nil {
+		return false, err
+	}
+	if tdef == nil {
+		return false, fmt.Errorf("table not found: %s", table)
+	}
+
+	// create a new temp record to try getting the value
+	// this is to check if it's already been inserted
+	tempRec := &Record{}
+	for i, val := range rec.Vals[:tdef.Pkeys] {
+		switch val.Type {
+		case TYPE_BYTES:
+			tempRec.AddStr(rec.Cols[i], val.Str)
+		case TYPE_INT64:
+			tempRec.AddI64(rec.Cols[i], val.I64)
+		}
+	}
+
+	ok, err := dbGet(db, tdef, tempRec)
+	// key does not exists insert new key value pair
+	if !ok {
+		return dbSet(db, tdef, rec)
+	}
+
+	return false, fmt.Errorf("key already exists")
+}
+
+// Update updates preexisting record in the given table
+// to the new record provided
+// if the record does not exists, error is thrown
+func (db *DB) Update(table string, rec Record) (bool, error) {
+	tdef, err := getTableDef(db, table)
+	if err != nil {
+		return false, fmt.Errorf("getting table defination: %s", err)
+	}
+	dbSet(db, tdef, rec)
+	return true, nil
+}
+
+// TODO: interfaces for handling single record in a table
 // func (db *DB) Upsert(table string, rec Record) (bool, error)
 // func (db *DB) Delete(table string, rec Record) (bool, error)
+
+func dbSet(db *DB, tdef *TableDef, rec Record) (bool, error) {
+	// get the record values
+	values, err := getRecordVals(tdef, rec, tdef.Pkeys)
+	if err != nil {
+		return false, fmt.Errorf("getting record values: %w", err)
+	}
+
+	// get the encoded key
+	key := encodeKey(tdef.Prefix, values[:tdef.Pkeys])
+	val := encodeVal(values[tdef.Pkeys:])
+
+	err = db.kv.Set(key, val)
+	if err != nil {
+		return false, fmt.Errorf("error setting key value pair: %w", err)
+	}
+	return true, nil
+}
 
 // dbGet gets the value and the value is stored in the rec itself
 // the rec is assumend to contain all the primary keys
@@ -182,6 +261,14 @@ func encodeKey(prefix uint32, pks []Value) []byte {
 		}
 	}
 	return key
+}
+
+func encodeVal(vals []Value) []byte {
+	data, err := json.Marshal(vals)
+	if err != nil {
+		panic("mashaling json data")
+	}
+	return data
 }
 
 // decodeVal decodes the values into the Record
