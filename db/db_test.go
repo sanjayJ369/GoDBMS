@@ -140,17 +140,20 @@ func TestUpdate(t *testing.T) {
 
 	kvstore := NewStubStore()
 	db := NewDB("/tmp/", kvstore)
+	// insert table defination, Update function uses table defination
+	// to get the previously inserted value
+	insertStubTableDefination(t, kvstore, *stubTableDef)
 
 	t.Run("updating a pre existing value", func(t *testing.T) {
-		// insert table defination, Update function uses table defination
-		// to get the previously inserted value
-		insertStubTableDefination(t, kvstore, *stubTableDef)
 
 		// create another record with updated values
 		updatedStubRec := &Record{}
 		updatedStubRec.AddI64("id", 1)
 		updatedStubRec.AddI64("number", 5)
 		updatedStubRec.AddStr("string", []byte("this is updated string"))
+
+		// insert record before updating it
+		insertRecord(t, kvstore, getStubRecord())
 
 		// update record
 		ok, err := db.Update("stub", *updatedStubRec)
@@ -165,6 +168,95 @@ func TestUpdate(t *testing.T) {
 		// check if the value is updated
 		assert.Equal(t, *updatedStubRec, *gotRec, "the record is updated")
 	})
+
+	t.Run("trying to update non existing value", func(t *testing.T) {
+		// update a value that does not exist
+		gotRec := &Record{}
+		gotRec.AddI64("id", 2)
+
+		ok, err := db.Update("stub", *gotRec)
+		require.Error(t, err, "updating non exisistent value")
+		assert.False(t, ok, "updating non exisistent value")
+	})
+}
+
+func TestUpsert(t *testing.T) {
+
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+	// insert table defination, Update function uses table defination
+	// to get the previously inserted value
+	insertStubTableDefination(t, kvstore, *stubTableDef)
+
+	t.Run("insertes a new value if it does not exist", func(t *testing.T) {
+		rec := getStubRecord()
+		ok, err := db.Upsert("stub", *rec)
+		require.NoError(t, err, "upserting value")
+		assert.True(t, ok, "upserting value")
+
+		// check if the new value is inserted in the kv store
+		key := encodeKey(stubTableDef.Prefix, rec.Vals[:stubTableDef.Pkeys])
+		wantval := encodeVal(rec.Vals[stubTableDef.Pkeys:])
+		gotval, ok := kvstore.store[string(key)]
+
+		assert.True(t, ok, "getting inserted kv pair")
+		assert.Equal(t, wantval, gotval)
+	})
+
+	t.Run("update previously inserted value", func(t *testing.T) {
+		// create another record with updated values
+		updatedStubRec := &Record{}
+		updatedStubRec.AddI64("id", 1)
+		updatedStubRec.AddI64("number", 5)
+		updatedStubRec.AddStr("string", []byte("this is updated string"))
+
+		// upsert the updated record
+		ok, err := db.Upsert("stub", *updatedStubRec)
+		require.NoError(t, err, "upserting pre-exisiting value")
+		assert.True(t, ok, "upserting pre-exisiting value")
+
+		// get the key value
+		pkvals := updatedStubRec.Vals[:stubTableDef.Pkeys]
+		colvals := updatedStubRec.Vals[stubTableDef.Pkeys:]
+		key := encodeKey(stubTableDef.Prefix, pkvals)
+		wantval := encodeVal(colvals)
+		gotval, ok := kvstore.store[string(key)]
+
+		// check if they are updated
+		assert.True(t, ok, "getting inserted kv pair")
+		assert.Equal(t, wantval, gotval)
+	})
+}
+
+func TestDelete(t *testing.T) {
+
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+	insertStubTableDefination(t, kvstore, *stubTableDef)
+	t.Run("delete non existent value", func(t *testing.T) {
+		rec := getStubRecord()
+		pksrec := getPKs(*rec, stubTableDef.Pkeys)
+
+		ok, err := db.Delete("stub", *pksrec)
+		require.Error(t, err, "deleting non existent value")
+		assert.False(t, ok, "deleting non existent value")
+	})
+
+	t.Run("deleting a value", func(t *testing.T) {
+		// insert a new record
+		insertRecord(t, kvstore, getStubRecord())
+
+		// delete the record
+		pksrec := getPKs(*getStubRecord(), stubTableDef.Pkeys)
+		ok, err := db.Delete("stub", *pksrec)
+		require.NoError(t, err, "deleting a value")
+		assert.True(t, ok, "deleting a value")
+
+		// check kvstore if the value still exists
+		key := encodeKey(stubTableDef.Prefix, pksrec.Vals)
+		_, ok = kvstore.store[string(key)]
+		assert.False(t, ok, "value still exists")
+	})
 }
 
 func getStubRecord() *Record {
@@ -178,10 +270,9 @@ func getStubRecord() *Record {
 func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef TableDef) {
 	t.Helper()
 	// create table defination record to insert into store
-	tdef := stubTableDef
 	tdefRec := &Record{}
-	tdefRec.AddStr("name", []byte("stub"))
-	tdefByte, err := json.Marshal(tdef)
+	tdefRec.AddStr("name", []byte(stubTableDef.Name))
+	tdefByte, err := json.Marshal(stubTableDef)
 	require.NoError(t, err, "marshalling table defination")
 	tdefRec.AddStr("def", tdefByte)
 

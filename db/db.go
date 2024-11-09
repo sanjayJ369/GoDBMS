@@ -163,7 +163,7 @@ func (db *DB) Insert(table string, rec Record) (bool, error) {
 		}
 	}
 
-	ok, err := dbGet(db, tdef, tempRec)
+	ok, _ := dbGet(db, tdef, tempRec)
 	// key does not exists insert new key value pair
 	if !ok {
 		return dbSet(db, tdef, rec)
@@ -180,13 +180,54 @@ func (db *DB) Update(table string, rec Record) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("getting table defination: %s", err)
 	}
-	dbSet(db, tdef, rec)
-	return true, nil
+	// try getting the value to check if it exists
+	getRec := getPKs(rec, tdef.Pkeys)
+	ok, _ := dbGet(db, tdef, getRec)
+	if !ok {
+		return false, fmt.Errorf("value does not exists")
+	}
+
+	return dbSet(db, tdef, rec)
 }
 
-// TODO: interfaces for handling single record in a table
-// func (db *DB) Upsert(table string, rec Record) (bool, error)
-// func (db *DB) Delete(table string, rec Record) (bool, error)
+// Upsert tries to update the value if it does not exist
+// it inserts a new value, here the record is assumed to
+// contain all the attributes(columns) of the table
+func (db *DB) Upsert(table string, rec Record) (bool, error) {
+	tdef, err := getTableDef(db, table)
+	if err != nil {
+		return false, fmt.Errorf("getting table defination: %s", err)
+	}
+	return dbSet(db, tdef, rec)
+}
+
+// Delete deletes the record entry from the table
+// throws an error if the record does not exists
+// here the record is assumed to contain all the primary keys
+func (db *DB) Delete(table string, rec Record) (bool, error) {
+	tdef, err := getTableDef(db, table)
+	if err != nil {
+		return false, fmt.Errorf("getting table defination: %s", err)
+	}
+	return dbDel(db, tdef, rec)
+}
+
+func dbDel(db *DB, tdef *TableDef, rec Record) (bool, error) {
+	// get the record values
+	values, err := getRecordVals(tdef, rec, tdef.Pkeys)
+	if err != nil {
+		return false, fmt.Errorf("getting record values: %w", err)
+	}
+
+	// encode the primary keys and table prefix to get the key
+	key := encodeKey(tdef.Prefix, values[:tdef.Pkeys])
+	ok, err := dbGet(db, tdef, &rec)
+	if !ok {
+		return false, fmt.Errorf("value doest not exist: %w", err)
+	}
+
+	return db.kv.Del(key)
+}
 
 func dbSet(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	// get the record values
@@ -238,7 +279,7 @@ func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
 // getRecordVals returns values of the record
 // and repots if the given record is valid
 func getRecordVals(tdef *TableDef, rec Record, n int) ([]Value, error) {
-	if len(rec.Cols) < n {
+	if len(rec.Cols) < n || n != tdef.Pkeys {
 		return nil, fmt.Errorf("invalid number of columns in record")
 	}
 	return rec.Vals, nil
@@ -299,4 +340,21 @@ func getTableDef(db *DB, table string) (*TableDef, error) {
 		return nil, fmt.Errorf("decoding table defination: %w", err)
 	}
 	return tdef, nil
+}
+
+// getPKs extracts the primary keys and returns
+// record with only primary keys in it
+func getPKs(rec Record, Pkeys int) *Record {
+	newRec := &Record{}
+
+	for i := 0; i < Pkeys; i++ {
+		switch rec.Vals[i].Type {
+		case TYPE_BYTES:
+			newRec.AddStr(rec.Cols[i], rec.Vals[i].Str)
+		case TYPE_INT64:
+			newRec.AddI64(rec.Cols[i], rec.Vals[i].I64)
+		}
+	}
+
+	return newRec
 }
