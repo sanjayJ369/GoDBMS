@@ -123,6 +123,65 @@ func NewDB(path string, kv KVStore) *DB {
 	}
 }
 
+func (db *DB) TableNew(tdef *TableDef) error {
+	// before inserting the table get the table prefix
+	prefixrec := &Record{}
+	prefixrec.AddStr("key", []byte("prefix"))
+	ok, _ := dbGet(db, TDEF_META, prefixrec)
+	// there is no prefix stored in the meta
+	if !ok {
+		// insert prefix into meta data
+		// prefix starts from 3
+		prefixrec.AddI64("value", 3)
+		ok, err := dbSet(db, TDEF_META, *prefixrec)
+		if err != nil {
+			return fmt.Errorf("inserting prefix: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("inserting prefix")
+		}
+		tdef.Prefix = 3
+	} else {
+		// update the prefix
+		prefix := prefixrec.Get("value").I64
+		prefix++
+		ok, err := dbSet(db, TDEF_META, *prefixrec)
+		if err != nil {
+			return fmt.Errorf("inserting prefix: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("inserting prefix")
+		}
+		tdef.Prefix = uint32(prefix)
+	}
+
+	// create record to store the table defination
+	rec := &Record{}
+	rec.AddStr("name", []byte(tdef.Name))
+	data, err := json.Marshal(tdef)
+	if err != nil {
+		return fmt.Errorf("marshalling table defination: %w", err)
+	}
+	rec.AddStr("def", data)
+
+	// check if the table already exists
+	recpks := getPKs(*rec, tdef.Pkeys)
+	ok, _ = dbGet(db, TDEF_TABLE, recpks)
+	if ok {
+		return fmt.Errorf("table already exists")
+	}
+
+	// insert table defination on @table
+	ok, err = dbSet(db, TDEF_TABLE, *rec)
+	if err != nil {
+		return fmt.Errorf("inserting table defination: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("inserting table defination")
+	}
+	return nil
+}
+
 // Get gets the required rec, here the record(rec) should only contain
 // the primary keys, the columns(attribute) which are not primary keys
 // are added by the Get func into the rec itself
@@ -329,6 +388,11 @@ func decodeVal(tdef *TableDef, rec *Record, val []byte) error {
 
 // getTableDef gets and returns the table defination
 func getTableDef(db *DB, table string) (*TableDef, error) {
+	if table == "@table" {
+		return TDEF_TABLE, nil
+	} else if table == "@meta" {
+		return TDEF_META, nil
+	}
 	rec := (&Record{}).AddStr("name", []byte(table))
 	_, err := dbGet(db, TDEF_TABLE, rec)
 	if err != nil {

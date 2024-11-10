@@ -259,6 +259,46 @@ func TestDelete(t *testing.T) {
 	})
 }
 
+func TestTableNew(t *testing.T) {
+	kvstore := NewStubStore()
+	db := NewDB("/tmp/", kvstore)
+
+	t.Run("inserting a new table defination", func(t *testing.T) {
+		// insert new table defination
+		err := db.TableNew(stubTableDef)
+		require.NoError(t, err, "inserting new table")
+
+		// check if the table defination is present in kvstore
+		rec := &Record{}
+		rec.AddStr("name", []byte(stubTableDef.Name))
+		ok, err := db.Get("@table", rec)
+		require.NoError(t, err, "getting table defination")
+		assert.True(t, ok, "getting talble defination")
+	})
+
+	t.Run("trying to reinsert table defination", func(t *testing.T) {
+		// inserting a table again should throw an error
+		err := db.TableNew(stubTableDef)
+		assert.Error(t, err, "reinserting table defination")
+	})
+
+	t.Run("prefix of the inserted tables is different", func(t *testing.T) {
+		// new table defination
+		modtdef := *stubTableDef
+		modtdef.Name = "stub1"
+		err := db.TableNew(&modtdef)
+		require.NoError(t, err, "inserting new table defination")
+
+		oldtdef, err := getTableDef(db, "stub")
+		require.NoError(t, err, "getting old table defination")
+		newtdef, err := getTableDef(db, "stub1")
+		require.NoError(t, err, "getting new table defination")
+
+		assert.NotEqual(t, oldtdef.Prefix, newtdef.Prefix, "table prefix's are equal")
+		assert.Equal(t, newtdef.Prefix, oldtdef.Prefix+1, "different table prefixs")
+	})
+}
+
 func getStubRecord() *Record {
 	stubRecord := &Record{}
 	stubRecord.AddI64("id", 1)
