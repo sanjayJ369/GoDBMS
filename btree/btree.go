@@ -36,6 +36,13 @@ type BTree struct {
 	Del  func(uint64)        // allocate87 a page
 }
 
+// BIter is used to iterate though the leaf nodes
+type BIter struct {
+	tree *BTree   // pointer to Btree
+	path []BNode  // slice of nodes that from root to leaf both inclusive
+	pos  []uint16 // it indicates the index of child node
+}
+
 // checks if max node size can fit into a page
 func init() {
 	// size of largest possible node
@@ -44,6 +51,85 @@ func init() {
 	// check if the max node fits in a page
 	if node1max > PAGE_SIZE {
 		log.Fatalln("size of node exceeds the size of page")
+	}
+}
+
+// return current key value pair
+func (i *BIter) Deref() ([]byte, []byte) {
+	node := i.path[len(i.pos)-1]
+	idx := i.pos[len(i.pos)-1]
+	key := node.getKey(uint16(idx))
+	val := node.getVal(uint16(idx))
+	return key, val
+}
+
+// precondition of Deref()
+func (i *BIter) Valid() bool {
+	node := i.path[len(i.pos)-1]
+	pos := i.pos[len(i.pos)-1]
+	if pos == 0 || uint16(pos) >= node.nkeys()-1 {
+		return false
+	}
+	return true
+}
+
+// functions to iterate forward and backward
+func (i *BIter) Next() {
+	iterNext(i, len(i.path)-1)
+}
+
+func (i *BIter) Prev() {
+	iterPrev(i, len(i.path)-1)
+}
+
+func iterPrev(iter *BIter, level int) {
+	if iter.pos[level] > 0 {
+		// there is a kv pair to the left
+		// go to the prev kv pair
+		iter.pos[level]--
+	} else if level > 0 {
+		// there are no kv paris left in this node
+		// and if there is a sibiling nnode then go the sibiling node
+		iterPrev(iter, level-1)
+	} else {
+		// move past the last node
+		iter.pos[len(iter.pos)-1]--
+		return
+	}
+
+	// update path
+	if level+1 < len(iter.pos) {
+		node := iter.path[level]
+		knode := BNode(iter.tree.Get(node.getptr(iter.pos[level])))
+		iter.path[level+1] = knode
+		iter.pos[level+1] = knode.nkeys() - 1
+	}
+}
+
+func iterNext(iter *BIter, level int) {
+	if iter.pos[level]+1 < iter.path[level].nkeys() {
+		// there is still a kvpair pair in this node
+		// go to the next kv pair
+		iter.pos[level]++
+	} else if level > 0 {
+		// there are no kv paris left in this node
+		// and if there is a sibiling nnode then go the sibiling node
+		iterNext(iter, level-1)
+	} else {
+		// no, kv paris left to iterate
+		// past the last node
+		iter.pos[len(iter.pos)-1]++
+		return
+	}
+
+	// update path
+	if level+1 < len(iter.pos) {
+		node := iter.path[level]
+		knode := BNode(iter.tree.Get(node.getptr(iter.pos[level])))
+		// update path
+		iter.path[level+1] = knode
+		// reset position
+		iter.pos[level+1] = 0
 	}
 }
 
@@ -424,6 +510,11 @@ func PrintNode(node BNode) {
 				return r == bytes.Runes([]byte{0})[0]
 			}))
 	}
+	// for i := uint16(0); i < node.nkeys(); i++ {
+	// 	key := make([]byte, cap(node.getKey(i)))
+	// 	copy(key, node.getKey(i))
+	// 	fmt.Print("|", binary.BigEndian.Uint64(key))
+	// }
 	fmt.Print("|k:", node.nkeys(), "|", "\t")
 }
 
@@ -455,6 +546,18 @@ func PrintTree(tree BTree, node BNode) {
 	fmt.Println()
 	fmt.Println()
 	fmt.Println()
+}
+
+func (tree *BTree) SeekLE(key []byte) *BIter {
+	iter := &BIter{tree: tree}
+	for ptr := tree.Root; ptr != 0; {
+		node := BNode(tree.Get(ptr))
+		idx := nodeLookupLE(node, key)
+		iter.path = append(iter.path, node)
+		iter.pos = append(iter.pos, idx)
+		ptr = node.getptr(idx)
+	}
+	return iter
 }
 
 // insert a KV into a node, the result might be split.

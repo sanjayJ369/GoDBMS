@@ -620,20 +620,77 @@ func TestDelete(t *testing.T) {
 	})
 }
 
+func TestIterator(t *testing.T) {
+	cache := newC()
+	tree := cache.tree
+
+	// create 100 kv pairs
+	keyValSize := 200 // size of key = 200bytes and val = 200bytes
+	keys := make([][]byte, 0)
+	vals := make([][]byte, 0)
+	for i := 0; i < 100; i++ {
+		k, v := getStubKeyValue(keyValSize, i)
+		keys = append(keys, k)
+		vals = append(vals, v)
+	}
+	// insert 100 kv pairs
+	for i := 0; i < 100; i++ {
+		tree.Insert(keys[i], vals[i])
+	}
+
+	getkey := make([]byte, keyValSize)
+	binary.BigEndian.PutUint64(getkey, 50)
+	iter := tree.SeekLE(getkey)
+
+	t.Run("Deref returns seeked kv pair", func(t *testing.T) {
+		gotkey, gotval := iter.Deref()
+		wantkey, wantval := getStubKeyValue(keyValSize, 50)
+		assert.Equal(t, wantkey, gotkey)
+		assert.Equal(t, wantval, gotval)
+	})
+
+	t.Run("Next returns the next kv in order", func(t *testing.T) {
+		// values are stored in the decereasing order
+		// so the next value give key less then current value
+		for i := 49; i >= 0; i-- {
+			iter.Next()
+			gotkey, gotval := iter.Deref()
+			wantkey, wantval := getStubKeyValue(keyValSize, i)
+			assert.Equal(t, wantkey, gotkey)
+			assert.Equal(t, wantval, gotval)
+		}
+
+		// check if valid for last returns false
+		assert.False(t, iter.Valid(), "validator is returning true")
+
+		// iterate back to 99 from 0
+		for i := 0; i < 100; i++ {
+			gotkey, gotval := iter.Deref()
+			wantkey, wantval := getStubKeyValue(keyValSize, i)
+			assert.Equal(t, wantkey, gotkey)
+			assert.Equal(t, wantval, gotval)
+			iter.Prev()
+			fmt.Println("iter pos: ", iter.pos)
+		}
+	})
+}
+
 func getStubKeyValue(size, id int) ([]byte, []byte) {
 	if size == 0 {
-		key := []byte(fmt.Sprintf("key%d", id))
+		key := make([]byte, size)
+		binary.BigEndian.PutUint64(key, uint64(id))
 		val := []byte(fmt.Sprintf("this is val%d", id))
 		return key, val
 	}
 
 	key := make([]byte, size)
-	copy(key, []byte(fmt.Sprintf("key%d ", id)))
+	binary.BigEndian.PutUint64(key, uint64(id))
 	val := make([]byte, size)
-	copy(val, []byte(fmt.Sprintf("this is val%d ", id)))
+	copy(val, []byte(fmt.Sprintf("this is val:%d", id)))
 
 	return key, val
 }
+
 func getStubInternalNode(size int,
 	kvparis [][]byte, pointers []uint64) BNode {
 
