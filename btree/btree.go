@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"strings"
 )
 
 const (
@@ -23,6 +22,12 @@ const (
 	// header
 	BNODE_NODE = 1
 	BNODE_LEAF = 2
+
+	// comparitions
+	CMP_GT = 3 // >
+	CMP_GE = 2 // >=
+	CMP_LT = 1 // <
+	CMP_LE = 0 // <=
 )
 
 // format used to store bytes is 	LITTLE ENDIAN
@@ -255,11 +260,11 @@ func nodeLookupLE(node BNode, key []byte) uint16 {
 	// because first key is the smallest in a B+Tree Node
 	for i := uint16(1); i < nkeys; i++ {
 		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
+		cmp := bytes.Compare(k, key)
 		if cmp <= 0 {
 			found = i
 		}
-		if cmp > 0 {
+		if cmp >= 0 {
 			break
 		}
 	}
@@ -434,20 +439,42 @@ func nodeSplit2(left BNode, right BNode, old BNode) uint16 {
 		return 0
 	}
 
-	idx := old.nkeys()
-	size := uint16(HEADER)
-	for size < PAGE_SIZE {
-		size += (old.kvPos(idx) - old.kvPos(idx-1)) + POINTER + OFFSET
+	if old.nbytes() > 2*PAGE_SIZE {
+		idx := old.nkeys()
+		size := uint16(HEADER)
+
+		// if the size of the node spans 3 pages
+		// fill in the right node first
+		// and rest of the node into the left node
+		// so that right node fits in a page
+		for size < PAGE_SIZE {
+			size += (old.kvPos(idx) - old.kvPos(idx-1)) + POINTER + OFFSET
+			idx--
+		}
+		idx++
+
+		left.setHeader(old.btype(), idx)
+		right.setHeader(old.btype(), old.nkeys()-idx)
+
+		nodeAppendRange(left, old, 0, 0, idx)
+		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+		return idx
+	} else {
+		idx := uint16(0)
+		size := uint16(HEADER)
+		for size < PAGE_SIZE {
+			size += (old.kvPos(idx+1) - old.kvPos(idx)) + POINTER + OFFSET
+			idx++
+		}
 		idx--
+
+		left.setHeader(old.btype(), idx)
+		right.setHeader(old.btype(), old.nkeys()-idx)
+
+		nodeAppendRange(left, old, 0, 0, idx)
+		nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
+		return idx
 	}
-	idx++
-
-	left.setHeader(old.btype(), idx)
-	right.setHeader(old.btype(), old.nkeys()-idx)
-
-	nodeAppendRange(left, old, 0, 0, idx)
-	nodeAppendRange(right, old, 0, idx, old.nkeys()-idx)
-	return idx
 }
 
 // Split a node if it's too big. The results are 1~3 nodes.
@@ -468,7 +495,6 @@ func nodeSplit3(old BNode) (uint16, [3]BNode, uint16, uint16) {
 	left := BNode(make([]byte, 2*PAGE_SIZE)) // may be split later
 	right := BNode(make([]byte, PAGE_SIZE))
 	mid2 := nodeSplit2(left, right, old)
-
 	// if left fits in a page return 2 nodes
 	if left.nbytes() <= PAGE_SIZE {
 		left = left[:PAGE_SIZE]
@@ -504,17 +530,17 @@ func PrintNode(node BNode) {
 		fmt.Print("nil page")
 		return
 	}
-	for i := uint16(0); i < node.nkeys(); i++ {
-		fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
-			func(r rune) bool {
-				return r == bytes.Runes([]byte{0})[0]
-			}))
-	}
 	// for i := uint16(0); i < node.nkeys(); i++ {
-	// 	key := make([]byte, cap(node.getKey(i)))
-	// 	copy(key, node.getKey(i))
-	// 	fmt.Print("|", binary.BigEndian.Uint64(key))
+	// 	fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
+	// 		func(r rune) bool {
+	// 			return r == bytes.Runes([]byte{0})[0]
+	// 		}))
 	// }
+	for i := uint16(0); i < node.nkeys(); i++ {
+		key := make([]byte, cap(node.getKey(i)))
+		copy(key, node.getKey(i))
+		fmt.Print("|", binary.BigEndian.Uint64(key))
+	}
 	fmt.Print("|k:", node.nkeys(), "|", "\t")
 }
 
@@ -789,14 +815,15 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 		tree.Del(node.getptr(idx - 1))
 		nodeReplace2Kid(new, node, idx-1, tree.New(merged), merged.getKey(0))
 
+	// merge with right sibiling
 	case mergeDir > 0:
 		// merge two nodes
 		merged := BNode(make([]byte, PAGE_SIZE))
-		nodeMerge(merged, sibiling, updated)
+		nodeMerge(merged, updated, sibiling)
 
 		// delete old sibiling node
 		tree.Del(node.getptr(idx + 1))
-		nodeReplace2Kid(new, node, idx-1, tree.New(merged), merged.getKey(0))
+		nodeReplace2Kid(new, node, idx, tree.New(merged), merged.getKey(0))
 
 	case mergeDir == 0 && updated.nkeys() == 0:
 		// child node is empty

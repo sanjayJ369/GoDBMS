@@ -225,7 +225,7 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 	t.Run("nodeLookupLE returns the first key <= given key", func(t *testing.T) {
 
 		got := nodeLookupLE(stubNode, []byte("this is key3"))
-		assert.Equal(t, uint16(0), got, "node lookup less then")
+		assert.Equal(t, uint16(3), got, "node lookup less then")
 	})
 
 	t.Run("nodeAppendRange copies kvpairs from old to new node upto given index", func(t *testing.T) {
@@ -458,7 +458,7 @@ func TestNodeSplit(t *testing.T) {
 		kvpairs := make([][]byte, 0)
 		size := HEADER * 2
 		count := 0
-		for size < 2*PAGE_SIZE {
+		for size < 1.5*PAGE_SIZE {
 			key := make([]byte, 250)
 			copy(key, []byte(fmt.Sprintf("this is key%d", count)))
 
@@ -467,7 +467,6 @@ func TestNodeSplit(t *testing.T) {
 
 			size += len(key) + len(val) + KVHEADER + POINTER + OFFSET
 			newkv := getKVpair(key, val)
-
 			kvpairs = append(kvpairs, newkv)
 			count += 1
 		}
@@ -590,6 +589,7 @@ func TestInsert(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			key, val := getStubKeyValue(500, i)
 			tree.Insert(key, val)
+			PrintTree(tree, tree.Get(tree.Root))
 		}
 
 		for i := 0; i < 100; i++ {
@@ -607,12 +607,12 @@ func TestDelete(t *testing.T) {
 		cache := newC()
 		tree := cache.tree
 
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ {
 			key, val := getStubKeyValue(500, i)
 			tree.Insert(key, val)
 		}
 
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ {
 			key, _ := getStubKeyValue(500, i)
 			assert.True(t, tree.Delete(key))
 			PrintTree(tree, BNode(tree.Get(tree.Root)))
@@ -652,25 +652,25 @@ func TestIterator(t *testing.T) {
 	t.Run("Next returns the next kv in order", func(t *testing.T) {
 		// values are stored in the decereasing order
 		// so the next value give key less then current value
-		for i := 49; i >= 0; i-- {
-			iter.Next()
+		for i := 50; i >= 0; i-- {
 			gotkey, gotval := iter.Deref()
 			wantkey, wantval := getStubKeyValue(keyValSize, i)
 			assert.Equal(t, wantkey, gotkey)
 			assert.Equal(t, wantval, gotval)
+			iter.Prev()
 		}
 
 		// check if valid for last returns false
 		assert.False(t, iter.Valid(), "validator is returning true")
 
 		// iterate back to 99 from 0
+		iter.Next()
 		for i := 0; i < 100; i++ {
 			gotkey, gotval := iter.Deref()
 			wantkey, wantval := getStubKeyValue(keyValSize, i)
 			assert.Equal(t, wantkey, gotkey)
 			assert.Equal(t, wantval, gotval)
-			iter.Prev()
-			fmt.Println("iter pos: ", iter.pos)
+			iter.Next()
 		}
 	})
 }
