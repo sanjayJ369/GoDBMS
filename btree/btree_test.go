@@ -222,8 +222,7 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 	}
 	stubNode := getStubInternalNode(PAGE_SIZE, kvpairs, []uint64{1, 2, 3, 4})
 
-	t.Run("nodeLookupLE returns the first key <= given key", func(t *testing.T) {
-
+	t.Run("nodeLookupLE returns the index of first key <= given key", func(t *testing.T) {
 		got := nodeLookupLE(stubNode, []byte("this is key3"))
 		assert.Equal(t, uint16(3), got, "node lookup less then")
 	})
@@ -325,6 +324,44 @@ func TestBNodeManipulationFuncs(t *testing.T) {
 
 		compareNodes(t, new, old, 0, 0, idx)
 		compareNodes(t, new, old, idx+1, idx+2, new.nkeys()-(idx+1))
+	})
+}
+
+func TestNodeLookups(t *testing.T) {
+	cache := newC()
+	tree := cache.tree
+
+	size := 20
+	count := 30
+	keys, vals := getOrderedKeyValuePairs(size, count)
+	for i := 0; i < count; i++ {
+		tree.Insert(keys[i], vals[i])
+	}
+
+	t.Run("nodeLookupCMP (LE) returns index of key, which is less then or equal to the given key", func(t *testing.T) {
+		k, v := getStubKeyValue(size, 15)
+		node := BNode(tree.Get(tree.Root))
+		idx := nodeLookupCmp(node, k, CMP_LE)
+		gotval := node.getVal(idx)
+		assert.Equal(t, v, gotval, "comparing values")
+	})
+
+	t.Run("nodeLookupCMP (LT) returns index of key, which is less then the given key", func(t *testing.T) {
+		k, _ := getStubKeyValue(size, 15)
+		_, wantval := getStubKeyValue(size, 14)
+		node := BNode(tree.Get(tree.Root))
+		idx := nodeLookupCmp(node, k, CMP_LT)
+		gotval := node.getVal(idx)
+		assert.Equal(t, wantval, gotval, "comparing values")
+	})
+
+	t.Run("nodeLookupCMP (GT) returns index of key, which is greater then the given key", func(t *testing.T) {
+		k, _ := getStubKeyValue(size, 15)
+		_, wantval := getStubKeyValue(size, 16)
+		node := BNode(tree.Get(tree.Root))
+		idx := nodeLookupCmp(node, k, CMP_GT)
+		gotval := node.getVal(idx)
+		assert.Equal(t, wantval, gotval, "comparing values")
 	})
 }
 
@@ -673,6 +710,18 @@ func TestIterator(t *testing.T) {
 			iter.Next()
 		}
 	})
+}
+
+func getOrderedKeyValuePairs(size, count int) ([][]byte, [][]byte) {
+	// size of key = 200bytes and val = 200bytes
+	keys := make([][]byte, 0)
+	vals := make([][]byte, 0)
+	for i := 0; i < count; i++ {
+		k, v := getStubKeyValue(size, i)
+		keys = append(keys, k)
+		vals = append(vals, v)
+	}
+	return keys, vals
 }
 
 func getStubKeyValue(size, id int) ([]byte, []byte) {

@@ -250,6 +250,78 @@ func (b BNode) nbytes() uint16 {
 	return b.kvPos(b.nkeys())
 }
 
+// nodeLookupCmp returns the index of the node
+// which is according to the given comparition
+// ex: if keys in the node are 1, 2, 3, 4, 5
+// cmp = LE(0) and key = 2.5
+// it returns, 2 as 2 is less then or equal to 2.5
+// cmp = GE(2) and key = 3
+// it returns, 3 as 3 is greater then or equal to 3
+func nodeLookupCmp(node BNode, key []byte, cmp int) uint16 {
+	switch cmp {
+	case CMP_LE:
+		return nodeLookupLE(node, key)
+	case CMP_LT:
+		return nodeLookupLT(node, key)
+	case CMP_GE:
+		return nodeLookupGE(node, key)
+	case CMP_GT:
+		return nodeLookupGT(node, key)
+	default:
+		panic("invalid comparition constant")
+	}
+}
+
+func nodeLookupGT(node BNode, key []byte) uint16 {
+	nkeys := node.nkeys()
+	found := uint16(nkeys - 1)
+
+	for i := int(nkeys - 2); i >= 0; i-- {
+		k := node.getKey(uint16(i))
+		cmp := bytes.Compare(k, key)
+		if cmp > 0 {
+			found = uint16(i)
+		} else {
+			break
+		}
+	}
+
+	return found
+}
+func nodeLookupGE(node BNode, key []byte) uint16 {
+	nkeys := node.nkeys()
+	found := uint16(nkeys - 1)
+
+	for i := int(nkeys - 2); i >= 0; i-- {
+		k := node.getKey(uint16(i))
+		cmp := bytes.Compare(k, key)
+		if cmp >= 0 {
+			found = uint16(i)
+		} else {
+			break
+		}
+	}
+
+	return found
+}
+
+func nodeLookupLT(node BNode, key []byte) uint16 {
+	nkeys := node.nkeys()
+	found := uint16(0)
+
+	for i := uint16(1); i < nkeys; i++ {
+		k := node.getKey(i)
+		cmp := bytes.Compare(k, key)
+		if cmp < 0 {
+			found = i
+		} else {
+			break
+		}
+	}
+
+	return found
+}
+
 // returns the first key node whose range intersects the key. (kid[i] <= key)
 // LE = less then or equal to operator
 func nodeLookupLE(node BNode, key []byte) uint16 {
@@ -572,6 +644,18 @@ func PrintTree(tree BTree, node BNode) {
 	fmt.Println()
 	fmt.Println()
 	fmt.Println()
+}
+
+func (tree *BTree) SeekCmp(key []byte, cmp int) *BIter {
+	iter := &BIter{tree: tree}
+	for ptr := tree.Root; ptr != 0; {
+		node := BNode(tree.Get(ptr))
+		idx := nodeLookupCmp(node, key, cmp)
+		iter.path = append(iter.path, node)
+		iter.pos = append(iter.pos, idx)
+		ptr = node.getptr(idx)
+	}
+	return iter
 }
 
 func (tree *BTree) SeekLE(key []byte) *BIter {
