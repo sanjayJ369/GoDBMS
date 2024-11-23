@@ -350,21 +350,69 @@ func getRecordVals(tdef *TableDef, rec Record, n int) ([]Value, error) {
 // record
 func encodeKey(prefix uint32, pks []Value) []byte {
 	delimiter := byte(0x00)
-	key := []byte{}
-	key = append(key, byte(prefix))
+	key := make([]byte, 4)
+	// add prefix
+	binary.BigEndian.PutUint32(key, prefix)
 	for _, val := range pks {
 		switch val.Type {
 		case TYPE_BYTES:
-			key = append(key, val.Str...)
+			key = append(key, serializeBytes(val.Str)...)
+			// add delimiter
+			key = append(key, delimiter)
 		case TYPE_INT64:
 			key = append(key, serializeInt(val.I64)...)
 		default:
 			panic("invalid value type")
 		}
-		// add delimiter
-		key = append(key, delimiter)
 	}
 	return key
+}
+
+// decodeKey decode the keys
+func decodeKey(encodedBytes []byte, tdef TableDef) []Value {
+	// ignore prefix
+	// prefix is uint32 which is 4 bytes
+	encodedBytes = encodedBytes[4:]
+
+	// split the keys
+	pks := make([][]byte, 0)
+	bytePtr := 0
+	for _, keyType := range tdef.Types {
+		key := make([]byte, 0)
+		switch keyType {
+		case TYPE_BYTES:
+			for encodedBytes[bytePtr] != byte(0x00) {
+				key = append(key, encodedBytes[bytePtr])
+				bytePtr++
+			}
+			// skip the delimiter 0x00
+			bytePtr++
+		case TYPE_INT64:
+			key = append(key, encodedBytes[bytePtr:bytePtr+8]...)
+			bytePtr += 8 // size of int64
+		default:
+			panic("invalid key type")
+		}
+		pks = append(pks, key)
+	}
+
+	// keys are still in the encoded form
+	// decode keys
+	vals := make([]Value, 0)
+	for i, keyType := range tdef.Types {
+		val := &Value{}
+		switch keyType {
+		case TYPE_INT64:
+			val.Type = TYPE_INT64
+			val.I64 = deserializeInt(pks[i])
+		case TYPE_BYTES:
+			val.Type = TYPE_BYTES
+			val.Str = deserializeBytes(pks[i])
+		}
+		vals = append(vals, *val)
+	}
+
+	return vals
 }
 
 func deserializeBytes(encodedBytes []byte) []byte {

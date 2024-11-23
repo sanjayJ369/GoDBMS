@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -17,7 +18,7 @@ var stubTableDef = &TableDef{
 	Prefix: 3,
 }
 
-func TestEncodeKey(t *testing.T) {
+func TestEnDecKey(t *testing.T) {
 	prefix := uint32(32)
 	vals := []Value{
 		{
@@ -29,14 +30,28 @@ func TestEncodeKey(t *testing.T) {
 		},
 	}
 
-	got := encodeKey(prefix, vals)
+	t.Run("encodeKey encodes the key", func(t *testing.T) {
+		got := encodeKey(prefix, vals)
 
-	want := make([]byte, 0)
-	want = append(want, byte(prefix))
-	want = append(want, byte(vals[0].I64))
-	want = append(want, []byte(vals[1].Str)...)
+		want := make([]byte, 4)
+		binary.BigEndian.PutUint32(want, prefix)
+		want = append(want, serializeInt(vals[0].I64)...)
+		want = append(want, serializeBytes(vals[1].Str)...)
+		want = append(want, byte(0x00))
 
-	assert.Equal(t, want, got, "endoing values")
+		assert.Equal(t, want, got, "endoing values")
+	})
+
+	t.Run("decodeKey decodes the keys", func(t *testing.T) {
+		encodedkeys := encodeKey(prefix, vals)
+
+		tdef := &TableDef{
+			Types: []uint32{TYPE_INT64, TYPE_BYTES},
+			Pkeys: 2,
+		}
+		got := decodeKey(encodedkeys, *tdef)
+		assert.Equal(t, vals, got, "comparing original values with decoded values")
+	})
 }
 
 func TestDecodeVal(t *testing.T) {
