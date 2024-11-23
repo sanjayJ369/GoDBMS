@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 )
@@ -348,6 +349,7 @@ func getRecordVals(tdef *TableDef, rec Record, n int) ([]Value, error) {
 // and the primary keys of the record to get the
 // record
 func encodeKey(prefix uint32, pks []Value) []byte {
+	delimiter := byte(0x00)
 	key := []byte{}
 	key = append(key, byte(prefix))
 	for _, val := range pks {
@@ -355,12 +357,84 @@ func encodeKey(prefix uint32, pks []Value) []byte {
 		case TYPE_BYTES:
 			key = append(key, val.Str...)
 		case TYPE_INT64:
-			key = append(key, byte(val.I64))
+			key = append(key, serializeInt(val.I64)...)
 		default:
 			panic("invalid value type")
 		}
+		// add delimiter
+		key = append(key, delimiter)
 	}
 	return key
+}
+
+func deserializeBytes(encodedBytes []byte) []byte {
+	decodedBytes := make([]byte, 0)
+	escape := false
+	for _, b := range encodedBytes {
+		if b == 0x01 && !escape {
+			escape = true
+			continue
+		}
+
+		if escape {
+			escape = false
+			switch b {
+			case 0x01:
+				decodedBytes = append(decodedBytes, byte(0x00))
+			case 0x02:
+				decodedBytes = append(decodedBytes, byte(0x01))
+			default:
+				panic("invalid escape character")
+			}
+		} else {
+			decodedBytes = append(decodedBytes, b)
+		}
+	}
+	return decodedBytes
+}
+
+func serializeBytes(s []byte) []byte {
+	encodedBytes := make([]byte, 0)
+	for _, b := range s {
+		switch byte(b) {
+		case 0x00:
+			encodedBytes = append(encodedBytes, []byte{0x01, 0x01}...)
+		case 0x01:
+			encodedBytes = append(encodedBytes, []byte{0x01, 0x02}...)
+		default:
+			encodedBytes = append(encodedBytes, byte(b))
+		}
+	}
+	return encodedBytes
+}
+
+func deserializeInt(encodedNum []byte) int64 {
+	num := binary.BigEndian.Uint64(encodedNum)
+	// flip back the first bit
+	num = num ^ (1 << 63)
+
+	decodedNum := int64(num)
+	return decodedNum
+}
+
+func serializeInt(num int64) []byte {
+	// we should not allow -9223372036854775808 to as a key
+	// because it is represented as 10000.0000 (1 followed by 63 zeros)
+	// when we serialize it it turns out to be 0000..000 (64 0's)
+	// which is our delimiter
+	if num == -9223372036854775808 {
+		panic("number is too small, serializing causes collusion with delimiter")
+	}
+
+	res := make([]byte, 8)
+	// flip the 1st bit
+	// if the number of positive, 1st bit will be  changed
+	// to 1, which makes positive number greater then
+	// negative number in bytes comparition
+	// negative numbers are stored as 2's complements
+	// the greater the magniture, greater the number
+	binary.BigEndian.PutUint64(res, uint64(num)^(1<<63))
+	return res
 }
 
 func encodeVal(vals []Value) []byte {

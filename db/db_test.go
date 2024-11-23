@@ -259,6 +259,28 @@ func TestDelete(t *testing.T) {
 	})
 }
 
+func TestDataSerialization(t *testing.T) {
+	t.Run("test serialization of bytes", func(t *testing.T) {
+		data := make([]byte, 0)
+		data = append(data, []byte("hello world")...)
+		// add a nil byte (0x00)
+		data = append(data, byte(0x00))
+		data = append(data, []byte("world hello's back")...)
+
+		encodedData := serializeBytes(data)
+		decodedData := deserializeBytes(encodedData)
+
+		assert.Equal(t, data, decodedData, "comparing original data with deserialized data")
+	})
+
+	t.Run("test serialization of int64", func(t *testing.T) {
+		num := int64(-23423)
+		encodedNum := serializeInt(num)
+		decodedNum := deserializeInt(encodedNum)
+		assert.Equal(t, num, decodedNum, "comparing original int64 with deserialized num")
+	})
+}
+
 func TestTableNew(t *testing.T) {
 	kvstore := NewStubStore()
 	db := NewDB("/tmp/", kvstore)
