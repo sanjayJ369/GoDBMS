@@ -43,9 +43,9 @@ type BTree struct {
 
 // BIter is used to iterate though the leaf nodes
 type BIter struct {
-	tree *BTree   // pointer to Btree
-	path []BNode  // slice of nodes that from root to leaf both inclusive
-	pos  []uint16 // it indicates the index of child node
+	tree *BTree  // pointer to Btree
+	path []BNode // slice of nodes that from root to leaf both inclusive
+	pos  []int32 // it indicates the index of child node
 }
 
 // checks if max node size can fit into a page
@@ -72,7 +72,7 @@ func (i *BIter) Deref() ([]byte, []byte) {
 func (i *BIter) Valid() bool {
 	node := i.path[len(i.pos)-1]
 	pos := i.pos[len(i.pos)-1]
-	if pos == 0 || uint16(pos) >= node.nkeys()-1 {
+	if pos < 0 || uint16(pos) > node.nkeys()-1 {
 		return false
 	}
 	return true
@@ -88,6 +88,7 @@ func (i *BIter) Prev() {
 }
 
 func iterPrev(iter *BIter, level int) {
+
 	if iter.pos[level] > 0 {
 		// there is a kv pair to the left
 		// go to the prev kv pair
@@ -105,14 +106,14 @@ func iterPrev(iter *BIter, level int) {
 	// update path
 	if level+1 < len(iter.pos) {
 		node := iter.path[level]
-		knode := BNode(iter.tree.Get(node.getptr(iter.pos[level])))
+		knode := BNode(iter.tree.Get(node.getptr(uint16(iter.pos[level]))))
 		iter.path[level+1] = knode
-		iter.pos[level+1] = knode.nkeys() - 1
+		iter.pos[level+1] = int32(knode.nkeys() - 1)
 	}
 }
 
 func iterNext(iter *BIter, level int) {
-	if iter.pos[level]+1 < iter.path[level].nkeys() {
+	if iter.pos[level]+1 < int32(iter.path[level].nkeys()) {
 		// there is still a kvpair pair in this node
 		// go to the next kv pair
 		iter.pos[level]++
@@ -130,7 +131,7 @@ func iterNext(iter *BIter, level int) {
 	// update path
 	if level+1 < len(iter.pos) {
 		node := iter.path[level]
-		knode := BNode(iter.tree.Get(node.getptr(iter.pos[level])))
+		knode := BNode(iter.tree.Get(node.getptr(uint16(iter.pos[level]))))
 		// update path
 		iter.path[level+1] = knode
 		// reset position
@@ -652,7 +653,7 @@ func (tree *BTree) SeekCmp(key []byte, cmp int) *BIter {
 		node := BNode(tree.Get(ptr))
 		idx := nodeLookupCmp(node, key, cmp)
 		iter.path = append(iter.path, node)
-		iter.pos = append(iter.pos, idx)
+		iter.pos = append(iter.pos, int32(idx))
 		ptr = node.getptr(idx)
 	}
 	return iter
@@ -664,7 +665,7 @@ func (tree *BTree) SeekLE(key []byte) *BIter {
 		node := BNode(tree.Get(ptr))
 		idx := nodeLookupLE(node, key)
 		iter.path = append(iter.path, node)
-		iter.pos = append(iter.pos, idx)
+		iter.pos = append(iter.pos, int32(idx))
 		ptr = node.getptr(idx)
 	}
 	return iter
@@ -760,15 +761,32 @@ func (t *BTree) Insert(key, val []byte) {
 
 	node := treeInsert(t, t.Get(t.Root), key, val)
 	nsplit, split, _, _ := nodeSplit3(node)
-	t.Del(t.Root)
+
+	// handle initial splitting of root node
+	rootnode := BNode(t.Get(t.Root))
+	if rootnode.btype() != BNODE_LEAF {
+		t.Del(t.Root)
+	}
 
 	if nsplit > 1 {
+
 		// root node is split
 		// create new root node
 		newRoot := BNode(make([]byte, PAGE_SIZE))
 		newRoot.setHeader(BNODE_NODE, nsplit)
 		for i := 0; i < int(nsplit); i++ {
 			childNode := split[i]
+
+			// check if it's the first split
+			// if yes, ignore the null key
+			// which is added to maintain minimum number of keys
+			if rootnode.btype() == BNODE_LEAF && i == 0 {
+				modChildNode := BNode(make([]byte, PAGE_SIZE))
+				modChildNode.setHeader(childNode.btype(), childNode.nkeys()-1)
+				nodeAppendRange(modChildNode, childNode, 0, 1, childNode.nkeys()-1)
+				childNode = modChildNode
+			}
+
 			ptr, key := t.New(childNode), childNode.getKey(0)
 			nodeAppendKV(newRoot, uint16(i), ptr, key, nil)
 		}

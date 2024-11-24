@@ -652,7 +652,6 @@ func TestDelete(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			key, _ := getStubKeyValue(500, i)
 			assert.True(t, tree.Delete(key))
-			PrintTree(tree, BNode(tree.Get(tree.Root)))
 		}
 	})
 }
