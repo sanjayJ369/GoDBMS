@@ -22,6 +22,13 @@ type Kv struct {
 	mmap mmap.Mmap   // mmap of the file
 }
 
+type Iterator interface {
+	Deref() ([]byte, []byte)
+	Next()
+	Prev()
+	Valid() bool
+}
+
 func NewKv(loc string) (*Kv, error) {
 
 	newfile := false
@@ -67,6 +74,15 @@ func NewKv(loc string) (*Kv, error) {
 	k.mmap.FreeList.Set = k.mmap.PageWrite
 
 	return k, nil
+}
+
+func (k *Kv) Seek(key []byte) Iterator {
+	return k.tree.SeekLE(key)
+}
+
+// used only for debugging
+func (k *Kv) PrintTree() {
+	btree.PrintTree(k.tree, k.tree.Get(k.tree.Root))
 }
 
 func (k *Kv) Open() error {

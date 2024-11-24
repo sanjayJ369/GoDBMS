@@ -1,6 +1,8 @@
 package db
 
 import (
+	"bytes"
+	"dbms/kv"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -110,6 +112,61 @@ type KVStore interface {
 	Get(key []byte) ([]byte, error)
 	Open() error
 	Set(key []byte, val []byte) error
+	Seek(key []byte) kv.Iterator
+}
+
+type Scanner struct {
+	iter kv.Iterator
+	Key1 Record
+	Key2 Record
+	Tdef TableDef
+
+	// keys in bytes for faster comparition
+	key1 []byte
+	key2 []byte
+}
+
+func (sc *Scanner) Next() {
+	sc.iter.Next()
+}
+
+func (sc *Scanner) Prev() {
+	sc.iter.Prev()
+}
+
+// reports if we are within the range
+func (sc *Scanner) Valid() bool {
+	if !sc.iter.Valid() {
+		return false
+	}
+
+	// compare current key with range
+	key, _ := sc.iter.Deref()
+	cmp := bytes.Compare(key, sc.key1)
+	if cmp < 0 {
+		return false
+	}
+
+	cmp = bytes.Compare(key, sc.key2)
+	if cmp > 0 {
+		return false
+	}
+
+	return true
+}
+
+func (sc *Scanner) Deref() (*Record, error) {
+	// check if out of range
+	if !sc.Valid() {
+		return nil, fmt.Errorf("out of range")
+	}
+
+	key, val := sc.iter.Deref()
+	rec, err := kvToRecord(sc.Tdef, key, val)
+	if err != nil {
+		return nil, fmt.Errorf("getting row: %w", err)
+	}
+	return rec, nil
 }
 
 type DB struct {
@@ -122,6 +179,22 @@ func NewDB(path string, kv KVStore) *DB {
 		Path: path,
 		kv:   kv,
 	}
+}
+
+func (db *DB) NewScanner(tdef TableDef, key1, key2 Record) *Scanner {
+
+	key1Bytes := encodeKey(tdef.Prefix, getPKs(key1, tdef.Pkeys).Vals)
+	key2Bytes := encodeKey(tdef.Prefix, getPKs(key2, tdef.Pkeys).Vals)
+	sc := &Scanner{
+		iter: db.kv.Seek(key1Bytes),
+		Key1: key1,
+		Key2: key2,
+		Tdef: tdef,
+
+		key1: key1Bytes,
+		key2: key2Bytes,
+	}
+	return sc
 }
 
 func (db *DB) TableNew(tdef *TableDef) error {
@@ -377,7 +450,7 @@ func decodeKey(encodedBytes []byte, tdef TableDef) []Value {
 	// split the keys
 	pks := make([][]byte, 0)
 	bytePtr := 0
-	for _, keyType := range tdef.Types {
+	for _, keyType := range tdef.Types[:tdef.Pkeys] {
 		key := make([]byte, 0)
 		switch keyType {
 		case TYPE_BYTES:
@@ -399,7 +472,7 @@ func decodeKey(encodedBytes []byte, tdef TableDef) []Value {
 	// keys are still in the encoded form
 	// decode keys
 	vals := make([]Value, 0)
-	for i, keyType := range tdef.Types {
+	for i, keyType := range tdef.Types[:tdef.Pkeys] {
 		val := &Value{}
 		switch keyType {
 		case TYPE_INT64:
@@ -506,6 +579,27 @@ func decodeVal(tdef *TableDef, rec *Record, val []byte) error {
 		rec.Vals = append(rec.Vals, val)
 	}
 	return nil
+}
+
+func kvToRecord(tdef TableDef, key, val []byte) (*Record, error) {
+	rec := &Record{}
+	keys := decodeKey(key, tdef)
+	for i, key := range keys {
+		switch key.Type {
+		case TYPE_BYTES:
+			rec.AddStr(tdef.Cols[i], key.Str)
+		case TYPE_INT64:
+			rec.AddI64(tdef.Cols[i], key.I64)
+		default:
+			panic("invalid key type")
+		}
+	}
+
+	err := decodeVal(&tdef, rec, val)
+	if err != nil {
+		return nil, fmt.Errorf("decoding values: %w", err)
+	}
+	return rec, nil
 }
 
 // getTableDef gets and returns the table defination

@@ -1,6 +1,8 @@
 package db
 
 import (
+	"dbms/kv"
+	"dbms/util"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -85,6 +87,10 @@ func (s *stubStore) Open() error {
 }
 func (s *stubStore) Set(key, val []byte) error {
 	s.store[string(key)] = val
+	return nil
+}
+
+func (s *stubStore) Seek(key []byte) kv.Iterator {
 	return nil
 }
 
@@ -333,6 +339,107 @@ func TestTableNew(t *testing.T) {
 
 		assert.NotEqual(t, oldtdef.Prefix, newtdef.Prefix, "table prefix's are equal")
 		assert.Equal(t, newtdef.Prefix, oldtdef.Prefix+1, "different table prefixs")
+	})
+}
+
+func TestIterator(t *testing.T) {
+
+	loc := util.NewTempFileLoc()
+	store, err := kv.NewKv(loc)
+	require.NoError(t, err, "creating kv store")
+	db := NewDB(util.NewTempFileLoc(), store)
+
+	// insert tabel defination
+	testTable := &TableDef{
+		Name:  "test",
+		Cols:  []string{"id", "name"},
+		Types: []uint32{TYPE_INT64, TYPE_BYTES},
+		Pkeys: 1,
+	}
+
+	err = db.TableNew(testTable)
+	require.NoError(t, err, "insertion table defination")
+
+	// insert stub key value pairs
+	valSize := 200
+
+	count := 1500
+	for i := 0; i < count; i++ {
+		rec := &Record{}
+		rec.AddI64("id", int64(i))
+		val := make([]byte, valSize)
+		copy(val, []byte(fmt.Sprintf("row: %d", i)))
+		rec.AddStr("name", val)
+		ok, err := db.Insert("test", *rec)
+		require.NoError(t, err, "inserting new row")
+		assert.True(t, ok)
+	}
+
+	startIdx := int64(500)
+	endIdx := int64(1000)
+
+	startRec := &Record{}
+	startRec.AddI64("id", startIdx)
+	endRec := &Record{}
+	endRec.AddI64("id", endIdx)
+
+	sc := db.NewScanner(*testTable, *startRec, *endRec)
+
+	t.Run("Dref returns current Row", func(t *testing.T) {
+		gotRec, err := sc.Deref()
+		require.NoError(t, err, "getting row")
+		wantRec := &Record{}
+		wantRec.AddI64("id", 500)
+		val := make([]byte, valSize)
+		copy(val, []byte(fmt.Sprintf("row: %d", 500)))
+		wantRec.AddStr("name", val)
+
+		assert.Equal(t, *wantRec, *gotRec)
+	})
+
+	t.Run("Next goes to next Row", func(t *testing.T) {
+		for i := startIdx; i <= endIdx; i++ {
+			gotRec, err := sc.Deref()
+			require.NoError(t, err, "getting row")
+			wantRec := &Record{}
+			wantRec.AddI64("id", int64(i))
+			val := make([]byte, valSize)
+			copy(val, []byte(fmt.Sprintf("row: %d", i)))
+			wantRec.AddStr("name", val)
+
+			assert.Equal(t, *wantRec, *gotRec)
+			sc.Next()
+		}
+
+		// iterating beyond range should return false
+		assert.False(t, sc.Valid(), "iterating beyond range")
+
+		// go beyoncd range and get the row
+		// err is expected
+		_, err := sc.Deref()
+		require.Error(t, err, "dereferencing beyond range, expected error")
+
+		// undoing the previous next
+		// so that iterator gets within range
+		sc.Prev()
+	})
+
+	t.Run("Prev goes to previous Row", func(t *testing.T) {
+		for i := endIdx; i >= startIdx; i-- {
+			gotRec, err := sc.Deref()
+			require.NoError(t, err, "getting row")
+			wantRec := &Record{}
+			wantRec.AddI64("id", int64(i))
+			val := make([]byte, valSize)
+			copy(val, []byte(fmt.Sprintf("row: %d", i)))
+			wantRec.AddStr("name", val)
+
+			assert.Equal(t, *wantRec, *gotRec)
+			sc.Prev()
+		}
+
+		// iterating beyond range should return false
+		assert.False(t, sc.Valid(), "iterating beyond range")
 	})
 }
 
