@@ -79,31 +79,34 @@ func (r *Record) Get(col string) *Value {
 // tables are defined in such a way that the first
 // PKeys columns are the primary keys
 type TableDef struct {
-	Name   string   `json:"name"`   // name of the table
-	Cols   []string `json:"cols"`   // colums present in the table
-	Types  []uint32 `json:"types"`  // types of each column
-	Pkeys  int      `json:"pkeys"`  // number of primary keys
-	Prefix uint32   `json:"prefix"` // prefix corresponding to this table
+	Name     string     `json:"name"`     // name of the table
+	Cols     []string   `json:"cols"`     // colums present in the table
+	Types    []uint32   `json:"types"`    // types of each column
+	Pkeys    int        `json:"pkeys"`    // number of primary keys
+	Prefixes []uint32   `json:"prefixes"` // prefix corresponding to this table (inclding indices)
+	Indexes  [][]string `json:"indexex"`  // indexes contain columns present in each index, 1st element is primary key
 }
 
 // TDEF_TABLE is an internal table which stores each table name
 // and it's corresponding defination
 var TDEF_TABLE = &TableDef{
-	Name:   "@table",
-	Cols:   []string{"name", "def"},
-	Types:  []uint32{TYPE_BYTES, TYPE_BYTES},
-	Pkeys:  1,
-	Prefix: 2,
+	Name:     "@table",
+	Cols:     []string{"name", "def"},
+	Types:    []uint32{TYPE_BYTES, TYPE_BYTES},
+	Pkeys:    1,
+	Prefixes: []uint32{2},
+	Indexes:  [][]string{{"name"}},
 }
 
 // TDEF_META is an internal table which stores the meta data
 // requried for handling the database
 var TDEF_META = &TableDef{
-	Name:   "@meta",
-	Cols:   []string{"key", "value"},
-	Types:  []uint32{TYPE_BYTES, TYPE_BYTES},
-	Pkeys:  1,
-	Prefix: 1,
+	Name:     "@meta",
+	Cols:     []string{"key", "value"},
+	Types:    []uint32{TYPE_BYTES, TYPE_BYTES},
+	Pkeys:    1,
+	Prefixes: []uint32{1},
+	Indexes:  [][]string{{"key"}},
 }
 
 type KVStore interface {
@@ -121,6 +124,7 @@ type Scanner struct {
 	Key2 Record
 	Tdef TableDef
 
+	index int
 	// keys in bytes for faster comparition
 	key1 []byte
 	key2 []byte
@@ -181,69 +185,94 @@ func NewDB(path string, kv KVStore) *DB {
 	}
 }
 
-func (db *DB) NewScanner(tdef TableDef, key1, key2 Record) *Scanner {
+func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 
-	key1Bytes := encodeKey(tdef.Prefix, getPKs(key1, tdef.Pkeys).Vals)
-	key2Bytes := encodeKey(tdef.Prefix, getPKs(key2, tdef.Pkeys).Vals)
+	var key1Bytes []byte
+	var key2Bytes []byte
+
+	if idx == 0 {
+		key1Bytes = encodeKey(tdef.Prefixes[0], getPKs(key1, tdef.Pkeys).Vals)
+		key2Bytes = encodeKey(tdef.Prefixes[0], getPKs(key2, tdef.Pkeys).Vals)
+	} else {
+		key1vals := make([]Value, 0)
+		key2vals := make([]Value, 0)
+		for _, col := range tdef.Indexes[idx] {
+			val1 := key1.Get(col)
+			val2 := key2.Get(col)
+
+			key1vals = append(key1vals, *val1)
+			key2vals = append(key2vals, *val2)
+		}
+
+		key1Bytes = encodeKey(tdef.Prefixes[idx], key1vals)
+		key2Bytes = encodeKey(tdef.Prefixes[idx], key2vals)
+	}
+
 	sc := &Scanner{
-		iter: db.kv.Seek(key1Bytes),
-		Key1: key1,
-		Key2: key2,
-		Tdef: tdef,
-
-		key1: key1Bytes,
-		key2: key2Bytes,
+		iter:  db.kv.Seek(key1Bytes),
+		Key1:  key1,
+		Key2:  key2,
+		Tdef:  tdef,
+		index: idx,
+		key1:  key1Bytes,
+		key2:  key2Bytes,
 	}
 	return sc
 }
 
 func (db *DB) TableNew(tdef *TableDef) error {
-	// before inserting the table get the table prefix
-	prefixrec := &Record{}
-	prefixrec.AddStr("key", []byte("prefix"))
-	ok, _ := dbGet(db, TDEF_META, prefixrec)
-	// there is no prefix stored in the meta
-	if !ok {
-		// insert prefix into meta data
-		// prefix starts from 3
-		prefixrec.AddI64("value", 3)
-		ok, err := dbSet(db, TDEF_META, *prefixrec)
-		if err != nil {
-			return fmt.Errorf("inserting prefix: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("inserting prefix")
-		}
-		tdef.Prefix = 3
-	} else {
-		// update the prefix
-		prefix := prefixrec.Get("value").I64
-		prefix++
-		ok, err := dbSet(db, TDEF_META, *prefixrec)
-		if err != nil {
-			return fmt.Errorf("inserting prefix: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("inserting prefix")
-		}
-		tdef.Prefix = uint32(prefix)
-	}
 
 	// create record to store the table defination
 	rec := &Record{}
 	rec.AddStr("name", []byte(tdef.Name))
+
+	// check if the table already exists
+	recpks := getPKs(*rec, tdef.Pkeys)
+	ok, _ := dbGet(db, TDEF_TABLE, recpks)
+	if ok {
+		return fmt.Errorf("table already exists")
+	}
+
+	// before inserting the table get the table prefix
+	prefixrec := &Record{}
+	prefixrec.AddStr("key", []byte("prefix"))
+	ok, _ = dbGet(db, TDEF_META, prefixrec)
+
+	var curPrefix int64
+	// there is no prefix stored in the meta
+	if !ok {
+		// prefix of new table starts from 3
+		// as 1 as 2 are reserved for catalog tables
+		curPrefix = 3
+	} else {
+		curPrefix = prefixrec.Get("value").I64
+	}
+
+	// assign prefixes to the indexes of the table
+	Prefixes := make([]uint32, 0)
+	for range tdef.Indexes {
+		Prefixes = append(Prefixes, uint32(curPrefix))
+		curPrefix++
+	}
+
+	tdef.Prefixes = make([]uint32, len(Prefixes))
+	copy(tdef.Prefixes, Prefixes)
+
+	// update the prefix to the new value
+	prefixrec.AddI64("data", curPrefix)
+	ok, err := dbSet(db, TDEF_META, *prefixrec)
+	if err != nil {
+		return fmt.Errorf("inserting prefix: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("inserting prefix")
+	}
+
 	data, err := json.Marshal(tdef)
 	if err != nil {
 		return fmt.Errorf("marshalling table defination: %w", err)
 	}
 	rec.AddStr("def", data)
-
-	// check if the table already exists
-	recpks := getPKs(*rec, tdef.Pkeys)
-	ok, _ = dbGet(db, TDEF_TABLE, recpks)
-	if ok {
-		return fmt.Errorf("table already exists")
-	}
 
 	// insert table defination on @table
 	ok, err = dbSet(db, TDEF_TABLE, *rec)
@@ -353,10 +382,25 @@ func dbDel(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	}
 
 	// encode the primary keys and table prefix to get the key
-	key := encodeKey(tdef.Prefix, values[:tdef.Pkeys])
+	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 	ok, err := dbGet(db, tdef, &rec)
 	if !ok {
 		return false, fmt.Errorf("value doest not exist: %w", err)
+	}
+
+	// the rec that is given may only contain the primary keys
+	// so we get the entire row, which is used to get the keys of the
+	// seconday indexes then delete the seconday keys
+	// we don't have to call dbGet again as it's already been
+	// called to check whether rec is present or not
+	if len(tdef.Indexes) > 1 {
+		keys := getSecondaryIndexesKeys(tdef, rec)
+		for _, k := range keys {
+			_, err := db.kv.Del(k)
+			if err != nil {
+				return false, fmt.Errorf("deleting seconday keys: %w", err)
+			}
+		}
 	}
 
 	return db.kv.Del(key)
@@ -370,14 +414,59 @@ func dbSet(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	}
 
 	// get the encoded key
-	key := encodeKey(tdef.Prefix, values[:tdef.Pkeys])
+	// set the primay index
+	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 	val := encodeVal(values[tdef.Pkeys:])
 
 	err = db.kv.Set(key, val)
 	if err != nil {
 		return false, fmt.Errorf("error setting key value pair: %w", err)
 	}
+
+	// setting the secondary indexes
+	// seconday indexes does not hagetSecondaryIndexesKeysve any value
+	if len(tdef.Indexes) > 1 {
+		keys := getSecondaryIndexesKeys(tdef, rec)
+		for _, k := range keys {
+			err = db.kv.Set(k, []byte{})
+			if err != nil {
+				return false, fmt.Errorf("error setting key value pair: %w", err)
+			}
+		}
+	}
 	return true, nil
+}
+
+// getSecondaryIndexesKeys returns slice of keys when represent keys
+// which contain prefix + cols of index + primary key of table
+func getSecondaryIndexesKeys(tdef *TableDef, rec Record) [][]byte {
+
+	keys := make([][]byte, 0)
+	// loop though the indexes and create new key
+	for i, idx := range tdef.Indexes[1:] {
+
+		pks := make([]Value, 0)
+
+		// populate the temprec with the cols of the index
+		for _, col := range idx {
+			val := rec.Get(col)
+			// it is possible that that value is
+			// not defined in case the value is byte
+			// change the value to 0xff to preserve ordering
+			if val.Type == TYPE_BYTES && len(val.Str) == 0 {
+				val.Str = []byte{0xff}
+			}
+
+			pks = append(pks, *val)
+		}
+
+		// add primary keys to the temprec
+		pks = append(pks, rec.Vals[:tdef.Pkeys]...)
+
+		key := encodeKey(tdef.Prefixes[i+1], pks)
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // dbGet gets the value and the value is stored in the rec itself
@@ -393,7 +482,7 @@ func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
 	}
 
 	// encode the primary keys and table prefix to get the key
-	key := encodeKey(tdef.Prefix, values[:tdef.Pkeys])
+	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 
 	// get the value
 	val, err := db.kv.Get(key)

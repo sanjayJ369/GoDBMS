@@ -13,11 +13,12 @@ import (
 )
 
 var stubTableDef = &TableDef{
-	Name:   "stub",
-	Cols:   []string{"id", "number", "string"},
-	Types:  []uint32{TYPE_INT64, TYPE_INT64, TYPE_BYTES},
-	Pkeys:  1,
-	Prefix: 3,
+	Name:     "stub",
+	Cols:     []string{"id", "number", "string"},
+	Types:    []uint32{TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+	Pkeys:    1,
+	Prefixes: []uint32{3, 4},
+	Indexes:  [][]string{{"id"}, {"number"}},
 }
 
 func TestEnDecKey(t *testing.T) {
@@ -132,7 +133,7 @@ func TestGet(t *testing.T) {
 	// get stub record
 	rec := &Record{}
 	rec.AddI64("id", 1)
-	ok, err := db.Get("stub", rec)
+	ok, err := db.Get(stubTableDef.Name, rec)
 	require.NoError(t, err, "getting stub record")
 	assert.True(t, ok, "getting stub record")
 	// check got and want record
@@ -145,12 +146,14 @@ func TestDBSet(t *testing.T) {
 	db := NewDB("/tmp/", kvstore)
 
 	rec := getStubRecord()
-	dbSet(db, stubTableDef, *rec)
+	ok, err := dbSet(db, stubTableDef, *rec)
+	require.True(t, ok, "setting record")
+	require.NoError(t, err, "setting record")
 
 	got := &Record{}
 	got.AddI64("id", 1)
 
-	ok, err := dbGet(db, stubTableDef, got)
+	ok, err = dbGet(db, stubTableDef, got)
 	require.NoError(t, err, "getting value")
 	require.Equal(t, true, ok, "getting value")
 
@@ -216,7 +219,7 @@ func TestUpsert(t *testing.T) {
 		assert.True(t, ok, "upserting value")
 
 		// check if the new value is inserted in the kv store
-		key := encodeKey(stubTableDef.Prefix, rec.Vals[:stubTableDef.Pkeys])
+		key := encodeKey(stubTableDef.Prefixes[0], rec.Vals[:stubTableDef.Pkeys])
 		wantval := encodeVal(rec.Vals[stubTableDef.Pkeys:])
 		gotval, ok := kvstore.store[string(key)]
 
@@ -239,7 +242,7 @@ func TestUpsert(t *testing.T) {
 		// get the key value
 		pkvals := updatedStubRec.Vals[:stubTableDef.Pkeys]
 		colvals := updatedStubRec.Vals[stubTableDef.Pkeys:]
-		key := encodeKey(stubTableDef.Prefix, pkvals)
+		key := encodeKey(stubTableDef.Prefixes[0], pkvals)
 		wantval := encodeVal(colvals)
 		gotval, ok := kvstore.store[string(key)]
 
@@ -274,7 +277,7 @@ func TestDelete(t *testing.T) {
 		assert.True(t, ok, "deleting a value")
 
 		// check kvstore if the value still exists
-		key := encodeKey(stubTableDef.Prefix, pksrec.Vals)
+		key := encodeKey(stubTableDef.Prefixes[0], pksrec.Vals)
 		_, ok = kvstore.store[string(key)]
 		assert.False(t, ok, "value still exists")
 	})
@@ -330,6 +333,7 @@ func TestTableNew(t *testing.T) {
 		modtdef := *stubTableDef
 		modtdef.Name = "stub1"
 		err := db.TableNew(&modtdef)
+		fmt.Println(modtdef.Prefixes)
 		require.NoError(t, err, "inserting new table defination")
 
 		oldtdef, err := getTableDef(db, "stub")
@@ -337,8 +341,9 @@ func TestTableNew(t *testing.T) {
 		newtdef, err := getTableDef(db, "stub1")
 		require.NoError(t, err, "getting new table defination")
 
-		assert.NotEqual(t, oldtdef.Prefix, newtdef.Prefix, "table prefix's are equal")
-		assert.Equal(t, newtdef.Prefix, oldtdef.Prefix+1, "different table prefixs")
+		assert.NotEqual(t, oldtdef.Prefixes, newtdef.Prefixes, "table prefix's are equal")
+		assert.Equal(t, newtdef.Prefixes[0], oldtdef.Prefixes[0]+2, "different table prefixs")
+		assert.Equal(t, newtdef.Prefixes[1], newtdef.Prefixes[0]+1, "different table prefixs")
 	})
 }
 
@@ -351,10 +356,11 @@ func TestIterator(t *testing.T) {
 
 	// insert tabel defination
 	testTable := &TableDef{
-		Name:  "test",
-		Cols:  []string{"id", "name"},
-		Types: []uint32{TYPE_INT64, TYPE_BYTES},
-		Pkeys: 1,
+		Name:    "test",
+		Cols:    []string{"id", "name"},
+		Types:   []uint32{TYPE_INT64, TYPE_BYTES},
+		Indexes: [][]string{{"id"}},
+		Pkeys:   1,
 	}
 
 	err = db.TableNew(testTable)
@@ -383,7 +389,7 @@ func TestIterator(t *testing.T) {
 	endRec := &Record{}
 	endRec.AddI64("id", endIdx)
 
-	sc := db.NewScanner(*testTable, *startRec, *endRec)
+	sc := db.NewScanner(*testTable, *startRec, *endRec, 0)
 
 	t.Run("Dref returns current Row", func(t *testing.T) {
 		gotRec, err := sc.Deref()
@@ -461,7 +467,7 @@ func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef Ta
 	tdefRec.AddStr("def", tdefByte)
 
 	// insert table defination
-	key := encodeKey(TDEF_TABLE.Prefix, tdefRec.Vals[:stubTableDef.Pkeys])
+	key := encodeKey(TDEF_TABLE.Prefixes[0], tdefRec.Vals[:stubTableDef.Pkeys])
 	val, err := json.Marshal(tdefRec.Vals[stubTableDef.Pkeys:])
 	require.NoError(t, err, "marshalling table defination record")
 	kvstore.store[string(key)] = val
@@ -470,7 +476,7 @@ func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef Ta
 func insertRecord(t testing.TB, kvstore *stubStore, stubRecord *Record) {
 	t.Helper()
 
-	key := encodeKey(stubTableDef.Prefix, stubRecord.Vals[:stubTableDef.Pkeys])
+	key := encodeKey(stubTableDef.Prefixes[0], stubRecord.Vals[:stubTableDef.Pkeys])
 	val, err := json.Marshal(stubRecord.Vals[stubTableDef.Pkeys:])
 	require.NoError(t, err, "marshalling data")
 	kvstore.store[string(key)] = val
