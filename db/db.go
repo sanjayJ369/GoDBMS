@@ -349,7 +349,31 @@ func (db *DB) Update(table string, rec Record) (bool, error) {
 		return false, fmt.Errorf("value does not exists")
 	}
 
-	return dbSet(db, tdef, rec)
+	// if the value exists update the primary index
+	_, err = dbSet(db, tdef, rec)
+	if err != nil {
+		return false, fmt.Errorf("setting primary index: %w", err)
+	}
+
+	// delete old seconday indexes
+	keys := getSecondaryIndexesKeys(tdef, *getRec)
+	for _, key := range keys {
+		_, err := db.kv.Del(key)
+		if err != nil {
+			return false, fmt.Errorf("deleting seconday index: %w", err)
+		}
+	}
+
+	// insert new seconday indexex
+	keys = getSecondaryIndexesKeys(tdef, rec)
+	for _, key := range keys {
+		err := db.kv.Set(key, []byte{})
+		if err != nil {
+			return false, fmt.Errorf("deleting seconday index: %w", err)
+		}
+	}
+
+	return true, nil
 }
 
 // Upsert tries to update the value if it does not exist
@@ -360,7 +384,15 @@ func (db *DB) Upsert(table string, rec Record) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("getting table defination: %s", err)
 	}
-	return dbSet(db, tdef, rec)
+
+	// if row exists update else insert
+	getRec := getPKs(rec, tdef.Pkeys)
+	ok, _ := dbGet(db, tdef, getRec)
+	if ok {
+		return db.Update(table, rec)
+	} else {
+		return db.Insert(table, rec)
+	}
 }
 
 // Delete deletes the record entry from the table

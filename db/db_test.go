@@ -158,6 +158,20 @@ func TestDBSet(t *testing.T) {
 	require.Equal(t, true, ok, "getting value")
 
 	assert.Equal(t, rec, got)
+
+	// check if seconday indexes are inserted
+	// structure of seconday key
+	// prefix + vals + pk
+
+	// adding prefix to create a key
+	// which should represent the seconday index
+	vals := make([]Value, 0)
+	vals = append(vals, getStubRecord().Vals[1]) // appending num
+	vals = append(vals, getStubRecord().Vals[:stubTableDef.Pkeys]...)
+
+	wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
+
+	assert.Contains(t, kvstore.store, string(wantkey))
 }
 
 func TestUpdate(t *testing.T) {
@@ -177,10 +191,12 @@ func TestUpdate(t *testing.T) {
 		updatedStubRec.AddStr("string", []byte("this is updated string"))
 
 		// insert record before updating it
-		insertRecord(t, kvstore, getStubRecord())
+		ok, err := db.Insert(stubTableDef.Name, *getStubRecord())
+		require.NoError(t, err, "inserting record")
+		assert.True(t, ok, "inserting record")
 
 		// update record
-		ok, err := db.Update("stub", *updatedStubRec)
+		ok, err = db.Update("stub", *updatedStubRec)
 		require.NoError(t, err, "updaing record")
 		assert.True(t, ok, "updating record")
 
@@ -191,6 +207,26 @@ func TestUpdate(t *testing.T) {
 
 		// check if the value is updated
 		assert.Equal(t, *updatedStubRec, *gotRec, "the record is updated")
+
+		// check if the seconday index is update
+		// updating seconday is just deleting old key
+		// and inserting new key
+		oldSecVal := make([]Value, 0)
+		oldSecVal = append(oldSecVal, getStubRecord().Vals[1])                      // adding index col
+		oldSecVal = append(oldSecVal, getStubRecord().Vals[:stubTableDef.Pkeys]...) // adding primay keys
+		wantkey := encodeKey(stubTableDef.Prefixes[1], oldSecVal)
+
+		_, ok = kvstore.store[string(wantkey)]
+		assert.False(t, ok, "old seconday index is still present")
+
+		newSecVal := make([]Value, 0)
+		newSecVal = append(newSecVal, updatedStubRec.Vals[1])
+		newSecVal = append(newSecVal, updatedStubRec.Vals[:stubTableDef.Pkeys]...)
+		wantkey = encodeKey(stubTableDef.Prefixes[1], newSecVal)
+
+		_, ok = kvstore.store[string(wantkey)]
+		assert.True(t, ok, "new seconday index is not present")
+
 	})
 
 	t.Run("trying to update non existing value", func(t *testing.T) {
@@ -225,6 +261,15 @@ func TestUpsert(t *testing.T) {
 
 		assert.True(t, ok, "getting inserted kv pair")
 		assert.Equal(t, wantval, gotval)
+
+		// check if seconday index keys are inserted
+		vals := make([]Value, 0)
+		vals = append(vals, getStubRecord().Vals[1]) // appending num
+		vals = append(vals, getStubRecord().Vals[:stubTableDef.Pkeys]...)
+
+		wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
+		_, ok = kvstore.store[string(wantkey)]
+		assert.True(t, ok, "getting inserted seconday index")
 	})
 
 	t.Run("update previously inserted value", func(t *testing.T) {
@@ -249,6 +294,24 @@ func TestUpsert(t *testing.T) {
 		// check if they are updated
 		assert.True(t, ok, "getting inserted kv pair")
 		assert.Equal(t, wantval, gotval)
+
+		// check if old seconday indexes keys are deleted
+		// and if new seconday indexes are inserted
+		oldSecVal := make([]Value, 0)
+		oldSecVal = append(oldSecVal, getStubRecord().Vals[1])                      // adding index col
+		oldSecVal = append(oldSecVal, getStubRecord().Vals[:stubTableDef.Pkeys]...) // adding primay keys
+		wantkey := encodeKey(stubTableDef.Prefixes[1], oldSecVal)
+
+		_, ok = kvstore.store[string(wantkey)]
+		assert.False(t, ok, "old seconday index is still present")
+
+		newSecVal := make([]Value, 0)
+		newSecVal = append(newSecVal, updatedStubRec.Vals[1])
+		newSecVal = append(newSecVal, updatedStubRec.Vals[:stubTableDef.Pkeys]...)
+		wantkey = encodeKey(stubTableDef.Prefixes[1], newSecVal)
+
+		_, ok = kvstore.store[string(wantkey)]
+		assert.True(t, ok, "new seconday index is not present")
 	})
 }
 
@@ -268,8 +331,9 @@ func TestDelete(t *testing.T) {
 
 	t.Run("deleting a value", func(t *testing.T) {
 		// insert a new record
-		insertRecord(t, kvstore, getStubRecord())
+		db.Insert(stubTableDef.Name, *getStubRecord())
 
+		fmt.Println(kvstore.store)
 		// delete the record
 		pksrec := getPKs(*getStubRecord(), stubTableDef.Pkeys)
 		ok, err := db.Delete("stub", *pksrec)
@@ -280,6 +344,17 @@ func TestDelete(t *testing.T) {
 		key := encodeKey(stubTableDef.Prefixes[0], pksrec.Vals)
 		_, ok = kvstore.store[string(key)]
 		assert.False(t, ok, "value still exists")
+
+		// check if the seconday index still exists
+		vals := make([]Value, 0)
+		vals = append(vals, getStubRecord().Vals[1]) // appending num
+		vals = append(vals, getStubRecord().Vals[:stubTableDef.Pkeys]...)
+
+		wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
+		_, ok = kvstore.store[string(wantkey)]
+		assert.False(t, ok, "seconday index still exists")
+
+		fmt.Println(kvstore.store)
 	})
 }
 
@@ -449,6 +524,10 @@ func TestIterator(t *testing.T) {
 	})
 }
 
+// returns a record having the following structure
+//
+//	.| "id"   |  "number" | "string"           |
+//	.|   1    |     2     |  "this is a string"|
 func getStubRecord() *Record {
 	stubRecord := &Record{}
 	stubRecord.AddI64("id", 1)
