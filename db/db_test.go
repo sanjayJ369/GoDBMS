@@ -432,9 +432,9 @@ func TestIterator(t *testing.T) {
 	// insert tabel defination
 	testTable := &TableDef{
 		Name:    "test",
-		Cols:    []string{"id", "name"},
-		Types:   []uint32{TYPE_INT64, TYPE_BYTES},
-		Indexes: [][]string{{"id"}},
+		Cols:    []string{"id", "number", "name"},
+		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+		Indexes: [][]string{{"id"}, {"number"}},
 		Pkeys:   1,
 	}
 
@@ -448,6 +448,7 @@ func TestIterator(t *testing.T) {
 	for i := 0; i < count; i++ {
 		rec := &Record{}
 		rec.AddI64("id", int64(i))
+		rec.AddI64("number", int64(count-i))
 		val := make([]byte, valSize)
 		copy(val, []byte(fmt.Sprintf("row: %d", i)))
 		rec.AddStr("name", val)
@@ -458,11 +459,15 @@ func TestIterator(t *testing.T) {
 
 	startIdx := int64(500)
 	endIdx := int64(1000)
+	scanLen := endIdx - startIdx
 
 	startRec := &Record{}
 	startRec.AddI64("id", startIdx)
+	startRec.AddI64("number", int64(count)-startIdx)
+
 	endRec := &Record{}
 	endRec.AddI64("id", endIdx)
+	endRec.AddI64("number", int64(count)-endIdx)
 
 	sc := db.NewScanner(*testTable, *startRec, *endRec, 0)
 
@@ -471,6 +476,7 @@ func TestIterator(t *testing.T) {
 		require.NoError(t, err, "getting row")
 		wantRec := &Record{}
 		wantRec.AddI64("id", 500)
+		wantRec.AddI64("number", int64(count-500))
 		val := make([]byte, valSize)
 		copy(val, []byte(fmt.Sprintf("row: %d", 500)))
 		wantRec.AddStr("name", val)
@@ -484,6 +490,7 @@ func TestIterator(t *testing.T) {
 			require.NoError(t, err, "getting row")
 			wantRec := &Record{}
 			wantRec.AddI64("id", int64(i))
+			wantRec.AddI64("number", int64(count)-i)
 			val := make([]byte, valSize)
 			copy(val, []byte(fmt.Sprintf("row: %d", i)))
 			wantRec.AddStr("name", val)
@@ -511,6 +518,7 @@ func TestIterator(t *testing.T) {
 			require.NoError(t, err, "getting row")
 			wantRec := &Record{}
 			wantRec.AddI64("id", int64(i))
+			wantRec.AddI64("number", int64(count)-i)
 			val := make([]byte, valSize)
 			copy(val, []byte(fmt.Sprintf("row: %d", i)))
 			wantRec.AddStr("name", val)
@@ -521,6 +529,33 @@ func TestIterator(t *testing.T) {
 
 		// iterating beyond range should return false
 		assert.False(t, sc.Valid(), "iterating beyond range")
+	})
+
+	t.Run("scanning of secondary indexes is performed in accordance with the sequence of the secondary index values.", func(t *testing.T) {
+		// testing scanning of seconday indexex
+		sc = db.NewScanner(*testTable, *startRec, *endRec, 1)
+		// here the seconday index is number
+		// number field of startRec is > then the number field of endRec
+		// so the scan should begin from endRec upto startRec
+
+		num := endRec.Vals[1].I64 // number field
+		id := endRec.Vals[0].I64  // id filed
+		for i := 0; i < int(scanLen); i++ {
+			gotRec, err := sc.Deref()
+			sc.Next()
+			require.NoError(t, err, "dereferencing row")
+
+			wantRec := &Record{}
+			wantRec.AddI64("id", id)
+			wantRec.AddI64("number", num)
+			val := make([]byte, valSize)
+			copy(val, []byte(fmt.Sprintf("row: %d", id)))
+			wantRec.AddStr("name", val)
+
+			assert.Equal(t, wantRec, gotRec)
+			num++
+			id--
+		}
 	})
 }
 

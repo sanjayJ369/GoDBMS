@@ -125,6 +125,7 @@ type Scanner struct {
 	Tdef TableDef
 
 	index int
+	db    *DB
 	// keys in bytes for faster comparition
 	key1 []byte
 	key2 []byte
@@ -159,6 +160,38 @@ func (sc *Scanner) Valid() bool {
 	return true
 }
 
+func (sc *Scanner) kvToRecord(tdef *TableDef, key, val []byte, idx int) (*Record, error) {
+	// if we are scanner seconday index
+	// get the primary keys, then deref the row
+	if idx != 0 {
+		rec := getPKFromSecKey(tdef, key, idx)
+		_, err := dbGet(sc.db, tdef, rec)
+		if err != nil {
+			return nil, fmt.Errorf("getting seconday index row: %w", err)
+		}
+		return rec, nil
+	}
+
+	rec := &Record{}
+	keys := decodeKey(key, *tdef)
+	for i, key := range keys {
+		switch key.Type {
+		case TYPE_BYTES:
+			rec.AddStr(tdef.Cols[i], key.Str)
+		case TYPE_INT64:
+			rec.AddI64(tdef.Cols[i], key.I64)
+		default:
+			panic("invalid key type")
+		}
+	}
+
+	err := decodeVal(tdef, rec, val)
+	if err != nil {
+		return nil, fmt.Errorf("decoding values: %w", err)
+	}
+	return rec, nil
+}
+
 func (sc *Scanner) Deref() (*Record, error) {
 	// check if out of range
 	if !sc.Valid() {
@@ -166,7 +199,7 @@ func (sc *Scanner) Deref() (*Record, error) {
 	}
 
 	key, val := sc.iter.Deref()
-	rec, err := kvToRecord(sc.Tdef, key, val)
+	rec, err := sc.kvToRecord(&sc.Tdef, key, val, sc.index)
 	if err != nil {
 		return nil, fmt.Errorf("getting row: %w", err)
 	}
@@ -185,6 +218,10 @@ func NewDB(path string, kv KVStore) *DB {
 	}
 }
 
+// NewScanner returns a scanner which is can used to iterate
+// though the valus from key1 to key2, in ascending order
+// if key2 is less then key1, iterator starts from key2 and
+// goes upto key1
 func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 
 	var key1Bytes []byte
@@ -204,8 +241,20 @@ func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 			key2vals = append(key2vals, *val2)
 		}
 
+		key1vals = append(key1vals, key1.Vals[:tdef.Pkeys]...)
+		key2vals = append(key2vals, key2.Vals[:tdef.Pkeys]...)
+
 		key1Bytes = encodeKey(tdef.Prefixes[idx], key1vals)
 		key2Bytes = encodeKey(tdef.Prefixes[idx], key2vals)
+	}
+
+	// as the data in the store is stored in ascending order
+	// we are making sure that key1 is less then key2
+	// this is done so that key2 marks the left end
+	cmp := bytes.Compare(key1Bytes, key2Bytes)
+	if cmp > 0 {
+		key1Bytes, key2Bytes = key2Bytes, key1Bytes
+		key1, key2 = key2, key1
 	}
 
 	sc := &Scanner{
@@ -216,6 +265,7 @@ func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 		index: idx,
 		key1:  key1Bytes,
 		key2:  key2Bytes,
+		db:    db,
 	}
 	return sc
 }
@@ -702,25 +752,73 @@ func decodeVal(tdef *TableDef, rec *Record, val []byte) error {
 	return nil
 }
 
-func kvToRecord(tdef TableDef, key, val []byte) (*Record, error) {
-	rec := &Record{}
-	keys := decodeKey(key, tdef)
-	for i, key := range keys {
-		switch key.Type {
+// getPKFromSecKey extracts the primary keys the seconday index key
+func getPKFromSecKey(tdef *TableDef, key []byte, idx int) *Record {
+	// ignore the prefix
+	key = key[4:]
+
+	pks := make([][]byte, 0)
+	bytePtr := 0
+	valueTypes := make([]uint32, 0)
+	for _, col := range tdef.Indexes[idx] {
+		for i, c := range tdef.Cols {
+			if col == c {
+				valueTypes = append(valueTypes, tdef.Types[i])
+				break
+			}
+		}
+	}
+
+	// skip seconday indexes
+	for _, keyType := range valueTypes {
+		switch keyType {
 		case TYPE_BYTES:
-			rec.AddStr(tdef.Cols[i], key.Str)
+			for key[bytePtr] != byte(0x00) {
+				bytePtr++
+			}
+			// skip the delimiter 0x00
+			bytePtr++
 		case TYPE_INT64:
-			rec.AddI64(tdef.Cols[i], key.I64)
+			bytePtr += 8 // size of int64
 		default:
 			panic("invalid key type")
 		}
 	}
 
-	err := decodeVal(&tdef, rec, val)
-	if err != nil {
-		return nil, fmt.Errorf("decoding values: %w", err)
+	// extract primary keys
+	for _, keyType := range tdef.Types[:tdef.Pkeys] {
+		pk := make([]byte, 0)
+		switch keyType {
+		case TYPE_BYTES:
+			for key[bytePtr] != byte(0x00) {
+				pk = append(pk, key[bytePtr])
+				bytePtr++
+			}
+			// skip the delimiter 0x00
+			bytePtr++
+		case TYPE_INT64:
+			pk = append(pk, key[bytePtr:bytePtr+8]...)
+			bytePtr += 8 // size of int64
+		default:
+			panic("invalid key type")
+		}
+		pks = append(pks, pk)
 	}
-	return rec, nil
+
+	// keys are still in the encoded form
+	// decode keys
+	rec := &Record{}
+	for i, keyType := range tdef.Types[:tdef.Pkeys] {
+		switch keyType {
+		case TYPE_INT64:
+			val := deserializeInt(pks[i])
+			rec.AddI64(tdef.Cols[i], val)
+		case TYPE_BYTES:
+			val := deserializeBytes(pks[i])
+			rec.AddStr(tdef.Cols[i], val)
+		}
+	}
+	return rec
 }
 
 // getTableDef gets and returns the table defination
