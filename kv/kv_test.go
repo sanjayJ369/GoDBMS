@@ -16,13 +16,14 @@ func TestSetGet(t *testing.T) {
 	size := 500
 
 	loc := util.NewTempFileLoc()
-	kv, err := NewKv(loc)
+	store, err := NewKv(loc)
+	kv := &KVTX{}
+	store.Begin(kv)
 	require.NoError(t, err, "creating new kv")
 
 	require.NoError(t, err, "opening kv")
 	t.Run("set and get the kv pair", func(t *testing.T) {
-		err := kv.Set([]byte("hello"), []byte("world"))
-		require.NoError(t, err, "setting new kvpair")
+		kv.Set([]byte("hello"), []byte("world"))
 
 		val, err := kv.Get([]byte("hello"))
 		require.NoError(t, err, "getting value")
@@ -37,8 +38,7 @@ func TestSetGet(t *testing.T) {
 			copy(val, fmt.Sprintf("this is val%d", i))
 			key := []byte(fmt.Sprintf("key%d", i))
 
-			err := kv.Set(key, val)
-			require.NoError(t, err, "setting new kvpair")
+			kv.Set(key, val)
 		}
 		endTime := time.Now()
 
@@ -52,12 +52,14 @@ func TestSetGet(t *testing.T) {
 		}
 
 		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
-		kv.Close()
+		store.Commit(kv)
 	})
 
 	t.Run("data is persisted to the disk", func(t *testing.T) {
 
-		kv, err = NewKv(loc)
+		store, err = NewKv(loc)
+		kv := &KVTX{}
+		store.Begin(kv)
 		require.NoError(t, err, "opening kv")
 
 		for i := 0; i < count; i++ {

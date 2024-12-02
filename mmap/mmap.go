@@ -62,24 +62,29 @@ func (m *Mmap) ExtendMmap(npages int) error {
 		return nil
 	}
 
-	var newChunk []byte
-	var err error
+	var newChunk [][]byte
 	// skip the master page
-	if m.Total == 0 {
-		newChunk, err = syscall.Mmap(int(m.Fp.Fd()), 0, 2*btree.PAGE_SIZE,
-			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-		m.Total += btree.PAGE_SIZE * 2
-	} else {
-		newChunk, err = syscall.Mmap(int(m.Fp.Fd()), int64(m.Total), m.Total,
-			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-		m.Total += m.Total
+	for m.Total < npages*btree.PAGE_SIZE {
+		if m.Total == 0 {
+			c, err := syscall.Mmap(int(m.Fp.Fd()), 0, 2*btree.PAGE_SIZE,
+				syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+			m.Total += btree.PAGE_SIZE * 2
+			newChunk = append(newChunk, c)
+			if err != nil {
+				return fmt.Errorf("mapping new chunk: %w", err)
+			}
+		} else {
+			c, err := syscall.Mmap(int(m.Fp.Fd()), int64(m.Total), m.Total,
+				syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+			m.Total += m.Total
+			newChunk = append(newChunk, c)
+			if err != nil {
+				return fmt.Errorf("mapping new chunk: %w", err)
+			}
+		}
 	}
 
-	if err != nil {
-		return fmt.Errorf("mapping new chunk: %w", err)
-	}
-
-	m.Chunks = append(m.Chunks, newChunk)
+	m.Chunks = append(m.Chunks, newChunk...)
 	return nil
 }
 

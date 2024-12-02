@@ -14,7 +14,7 @@ import (
 
 const DB_SIG = "Thanks,BuildYourOwnDbFromScratch"
 
-type Kv struct {
+type KV struct {
 	Path string // path to the db file
 
 	tree btree.BTree // Btree
@@ -29,7 +29,88 @@ type Iterator interface {
 	Valid() bool
 }
 
-func NewKv(loc string) (*Kv, error) {
+// type KVTX interface {
+// 	Seek(key []byte) Iterator
+// 	Get(key []byte) ([]byte, error)
+// 	Set(key []byte, val []byte)
+// 	Del(key []byte) bool
+// }
+
+// kv transaction
+type KVTX struct {
+	db   *KV
+	tree struct {
+		root uint64
+	}
+	free struct {
+		headpage uint64
+		headseq  uint64
+		tailpage uint64
+		tailseq  uint64
+	}
+}
+
+func (kv *KV) Begin(tx *KVTX) {
+	tx.db = kv
+	tx.tree.root = kv.tree.Root
+
+	tx.free.headpage = kv.mmap.FreeList.HeadPage
+	tx.free.headseq = kv.mmap.FreeList.HeadSeq
+	tx.free.tailpage = kv.mmap.FreeList.TailPage
+	tx.free.tailseq = kv.mmap.FreeList.TailSeq
+}
+
+func rollback(kv *KV, tx *KVTX) {
+	kv = tx.db
+	kv.tree.Root = tx.tree.root
+
+	kv.mmap.FreeList.HeadPage = tx.free.headpage
+	kv.mmap.FreeList.HeadSeq = tx.free.headseq
+	kv.mmap.FreeList.TailPage = tx.free.tailpage
+	kv.mmap.FreeList.TailSeq = tx.free.tailseq
+
+	kv.mmap.NAppend = 0
+	kv.mmap.Updates = map[uint64][]byte{}
+}
+
+func (kv *KV) Abort(tx *KVTX) {
+	rollback(kv, tx)
+}
+
+func (kv *KV) Commit(tx *KVTX) error {
+	if kv.tree.Root == tx.tree.root {
+		return nil
+	}
+
+	// write pages to disk
+	if err := writePages(kv); err != nil {
+		rollback(kv, tx)
+		return fmt.Errorf("writing pages: %w", err)
+	}
+
+	// fsync pages so that the
+	// data is persisted to the disk
+	if err := syncPages(kv); err != nil {
+		rollback(kv, tx)
+		return fmt.Errorf("fsync: %w", err)
+	}
+
+	kv.mmap.Flushed += kv.mmap.NAppend
+	kv.mmap.NAppend = 0
+	kv.mmap.Updates = map[uint64][]byte{}
+
+	// changeing the root node pointer
+	// which makes the entire process atomic
+	if err := masterStore(kv); err != nil {
+		return fmt.Errorf("storing master page: %w", err)
+	}
+	if err := kv.fp.Sync(); err != nil {
+		return fmt.Errorf("fsync master page: %w", err)
+	}
+	return nil
+}
+
+func NewKv(loc string) (*KV, error) {
 
 	newfile := false
 	if _, err := os.Stat(loc); errors.Is(err, os.ErrNotExist) {
@@ -41,9 +122,9 @@ func NewKv(loc string) (*Kv, error) {
 		return nil, fmt.Errorf("opening file: %w", err)
 	}
 
-	var k *Kv
+	var k *KV
 	if newfile {
-		k = &Kv{
+		k = &KV{
 			Path: loc,
 			tree: btree.BTree{},
 			fp:   fp,
@@ -54,7 +135,7 @@ func NewKv(loc string) (*Kv, error) {
 			},
 		}
 	} else {
-		k = &Kv{
+		k = &KV{
 			Path: loc,
 		}
 		err := k.Open()
@@ -76,16 +157,12 @@ func NewKv(loc string) (*Kv, error) {
 	return k, nil
 }
 
-func (k *Kv) Seek(key []byte) Iterator {
-	return k.tree.SeekLE(key)
-}
-
 // used only for debugging
-func (k *Kv) PrintTree() {
+func (k *KV) PrintTree() {
 	btree.PrintTree(k.tree, k.tree.Get(k.tree.Root))
 }
 
-func (k *Kv) Open() error {
+func (k *KV) Open() error {
 	// create/open the file
 	fp, err := os.OpenFile(k.Path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
@@ -119,26 +196,28 @@ fail:
 	return fmt.Errorf("masterLoad: %w", err)
 }
 
-func (k *Kv) Close() {
+func (k *KV) Close() {
 	k.mmap.Close()
 	k.fp.Close()
 }
 
-func (k *Kv) Get(key []byte) ([]byte, error) {
-	return k.tree.GetVal(key)
+func (k *KVTX) Seek(key []byte) Iterator {
+	return k.db.tree.SeekLE(key)
 }
 
-func (k *Kv) Set(key []byte, val []byte) error {
-	k.tree.Insert(key, val)
-	return flushpages(k)
+func (k *KVTX) Get(key []byte) ([]byte, error) {
+	return k.db.tree.GetVal(key)
 }
 
-func (k *Kv) Del(key []byte) (bool, error) {
-	deleted := k.tree.Delete(key)
-	return deleted, flushpages(k)
+func (k *KVTX) Set(key []byte, val []byte) {
+	k.db.tree.Insert(key, val)
 }
 
-func flushpages(k *Kv) error {
+func (k *KVTX) Del(key []byte) bool {
+	return k.db.tree.Delete(key)
+}
+
+func flushpages(k *KV) error {
 	err := writePages(k)
 	if err != nil {
 		return fmt.Errorf("writing pages to disk: %w", err)
@@ -149,7 +228,7 @@ func flushpages(k *Kv) error {
 // writePages extends the file
 // and extends the mmap and copies the temp
 // page into the disk
-func writePages(k *Kv) error {
+func writePages(k *KV) error {
 	npages := k.mmap.Flushed + k.mmap.NAppend
 
 	err := k.mmap.ExtendFile(int(npages))
@@ -174,7 +253,7 @@ func writePages(k *Kv) error {
 
 // syncPages flushes the data to the disk
 // and them updates the master page
-func syncPages(k *Kv) error {
+func syncPages(k *KV) error {
 	// flush the data to the disk
 	err := k.fp.Sync()
 	if err != nil {
@@ -205,7 +284,7 @@ func syncPages(k *Kv) error {
 // ... | fl-tailPage |   fl-tailSeq |
 //     | 	8B	     | 		8B	    |
 
-func masterLoad(db *Kv) error {
+func masterLoad(db *KV) error {
 	// file is not present
 	// allocate a page for master on the first write
 	if db.mmap.File == 0 {
@@ -249,7 +328,7 @@ func masterLoad(db *Kv) error {
 	return nil
 }
 
-func masterStore(db *Kv) error {
+func masterStore(db *KV) error {
 	var data [80]byte
 
 	copy(data[:32], []byte(DB_SIG))
