@@ -67,73 +67,75 @@ func TestDecodeVal(t *testing.T) {
 	assert.Equal(t, *stubRecord, *getRecord)
 }
 
-// stubStore replicates the implmentation of the acutal kv store
-type stubStore struct {
+// stubTX replicates the implmentation of the acutal kv store
+type stubTX struct {
 	store map[string][]byte
 }
 
-func (s *stubStore) Close() {}
-func (s *stubStore) Del(key []byte) (bool, error) {
+func (s *stubTX) Del(key []byte) bool {
 	delete(s.store, string(key))
-	return true, nil
+	return true
 }
-func (s *stubStore) Get(key []byte) ([]byte, error) {
+func (s *stubTX) Get(key []byte) ([]byte, error) {
 	if val, ok := s.store[string(key)]; ok {
 		return val, nil
 	}
 	return nil, fmt.Errorf("key not found")
 }
-func (s *stubStore) Open() error {
-	return nil
-}
-func (s *stubStore) Set(key, val []byte) error {
+func (s *stubTX) Set(key, val []byte) {
 	s.store[string(key)] = val
+}
+func (s *stubTX) Seek(key []byte) kv.Iterator {
 	return nil
 }
 
-func (s *stubStore) Seek(key []byte) kv.Iterator {
-	return nil
-}
-
-func NewStubStore() *stubStore {
+func NewStubStore() *stubTX {
 	store := make(map[string][]byte)
-	return &stubStore{
+	return &stubTX{
 		store: store,
 	}
 }
 
 func TestDBGet(t *testing.T) {
 
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 
 	rec := (&Record{}).AddI64("id", 1)
 
 	// insert value into kv store
-	insertRecord(t, kvstore, getStubRecord())
+	insertRecord(t, store, getStubRecord())
 
-	ok, err := dbGet(db, stubTableDef, rec)
+	ok, err := dbGet(tx, stubTableDef, rec)
 	require.NoError(t, err, "getting record")
 	assert.Equal(t, ok, true)
 	assert.Equal(t, *getStubRecord(), *rec)
 }
 
 func TestGet(t *testing.T) {
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
 
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 	// create table defination record to insert into db
 	// the table defination will be used by the db.Get method
 	// so inserting the table defination is nessary
-	insertStubTableDefination(t, kvstore, *stubTableDef)
+	insertStubTableDefination(t, store, *stubTableDef)
 
 	// insert value into kv store
-	insertRecord(t, kvstore, getStubRecord())
+	insertRecord(t, store, getStubRecord())
 
 	// get stub record
 	rec := &Record{}
 	rec.AddI64("id", 1)
-	ok, err := db.Get(stubTableDef.Name, rec)
+	ok, err := tx.Get(stubTableDef.Name, rec)
 	require.NoError(t, err, "getting stub record")
 	assert.True(t, ok, "getting stub record")
 	// check got and want record
@@ -142,18 +144,20 @@ func TestGet(t *testing.T) {
 }
 
 func TestDBSet(t *testing.T) {
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 
 	rec := getStubRecord()
-	ok, err := dbSet(db, stubTableDef, *rec)
-	require.True(t, ok, "setting record")
-	require.NoError(t, err, "setting record")
+	dbSet(tx, stubTableDef, *rec)
 
 	got := &Record{}
 	got.AddI64("id", 1)
 
-	ok, err = dbGet(db, stubTableDef, got)
+	ok, err := dbGet(tx, stubTableDef, got)
 	require.NoError(t, err, "getting value")
 	require.Equal(t, true, ok, "getting value")
 
@@ -171,16 +175,19 @@ func TestDBSet(t *testing.T) {
 
 	wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
 
-	assert.Contains(t, kvstore.store, string(wantkey))
+	assert.Contains(t, store, string(wantkey))
 }
 
 func TestUpdate(t *testing.T) {
-
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 	// insert table defination, Update function uses table defination
 	// to get the previously inserted value
-	insertStubTableDefination(t, kvstore, *stubTableDef)
+	insertStubTableDefination(t, store, *stubTableDef)
 
 	t.Run("updating a pre existing value", func(t *testing.T) {
 
@@ -191,19 +198,17 @@ func TestUpdate(t *testing.T) {
 		updatedStubRec.AddStr("string", []byte("this is updated string"))
 
 		// insert record before updating it
-		ok, err := db.Insert(stubTableDef.Name, *getStubRecord())
+		err := tx.Insert(stubTableDef.Name, *getStubRecord())
 		require.NoError(t, err, "inserting record")
-		assert.True(t, ok, "inserting record")
 
 		// update record
-		ok, err = db.Update("stub", *updatedStubRec)
-		require.NoError(t, err, "updaing record")
+		ok := tx.Update("stub", *updatedStubRec)
 		assert.True(t, ok, "updating record")
 
 		// get the updated value
 		gotRec := &Record{}
 		gotRec.AddI64("id", 1)
-		dbGet(db, stubTableDef, gotRec)
+		dbGet(tx, stubTableDef, gotRec)
 
 		// check if the value is updated
 		assert.Equal(t, *updatedStubRec, *gotRec, "the record is updated")
@@ -216,7 +221,7 @@ func TestUpdate(t *testing.T) {
 		oldSecVal = append(oldSecVal, getStubRecord().Vals[:stubTableDef.Pkeys]...) // adding primay keys
 		wantkey := encodeKey(stubTableDef.Prefixes[1], oldSecVal)
 
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.False(t, ok, "old seconday index is still present")
 
 		newSecVal := make([]Value, 0)
@@ -224,7 +229,7 @@ func TestUpdate(t *testing.T) {
 		newSecVal = append(newSecVal, updatedStubRec.Vals[:stubTableDef.Pkeys]...)
 		wantkey = encodeKey(stubTableDef.Prefixes[1], newSecVal)
 
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.True(t, ok, "new seconday index is not present")
 
 	})
@@ -234,30 +239,32 @@ func TestUpdate(t *testing.T) {
 		gotRec := &Record{}
 		gotRec.AddI64("id", 2)
 
-		ok, err := db.Update("stub", *gotRec)
-		require.Error(t, err, "updating non exisistent value")
+		ok := tx.Update("stub", *gotRec)
 		assert.False(t, ok, "updating non exisistent value")
 	})
 }
 
 func TestUpsert(t *testing.T) {
 
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 	// insert table defination, Update function uses table defination
 	// to get the previously inserted value
-	insertStubTableDefination(t, kvstore, *stubTableDef)
+	insertStubTableDefination(t, store, *stubTableDef)
 
 	t.Run("insertes a new value if it does not exist", func(t *testing.T) {
 		rec := getStubRecord()
-		ok, err := db.Upsert("stub", *rec)
-		require.NoError(t, err, "upserting value")
+		ok := tx.Upsert("stub", *rec)
 		assert.True(t, ok, "upserting value")
 
 		// check if the new value is inserted in the kv store
 		key := encodeKey(stubTableDef.Prefixes[0], rec.Vals[:stubTableDef.Pkeys])
 		wantval := encodeVal(rec.Vals[stubTableDef.Pkeys:])
-		gotval, ok := kvstore.store[string(key)]
+		gotval, ok := store[string(key)]
 
 		assert.True(t, ok, "getting inserted kv pair")
 		assert.Equal(t, wantval, gotval)
@@ -268,7 +275,7 @@ func TestUpsert(t *testing.T) {
 		vals = append(vals, getStubRecord().Vals[:stubTableDef.Pkeys]...)
 
 		wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.True(t, ok, "getting inserted seconday index")
 	})
 
@@ -280,8 +287,7 @@ func TestUpsert(t *testing.T) {
 		updatedStubRec.AddStr("string", []byte("this is updated string"))
 
 		// upsert the updated record
-		ok, err := db.Upsert("stub", *updatedStubRec)
-		require.NoError(t, err, "upserting pre-exisiting value")
+		ok := tx.Upsert("stub", *updatedStubRec)
 		assert.True(t, ok, "upserting pre-exisiting value")
 
 		// get the key value
@@ -289,7 +295,7 @@ func TestUpsert(t *testing.T) {
 		colvals := updatedStubRec.Vals[stubTableDef.Pkeys:]
 		key := encodeKey(stubTableDef.Prefixes[0], pkvals)
 		wantval := encodeVal(colvals)
-		gotval, ok := kvstore.store[string(key)]
+		gotval, ok := store[string(key)]
 
 		// check if they are updated
 		assert.True(t, ok, "getting inserted kv pair")
@@ -302,7 +308,7 @@ func TestUpsert(t *testing.T) {
 		oldSecVal = append(oldSecVal, getStubRecord().Vals[:stubTableDef.Pkeys]...) // adding primay keys
 		wantkey := encodeKey(stubTableDef.Prefixes[1], oldSecVal)
 
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.False(t, ok, "old seconday index is still present")
 
 		newSecVal := make([]Value, 0)
@@ -310,39 +316,40 @@ func TestUpsert(t *testing.T) {
 		newSecVal = append(newSecVal, updatedStubRec.Vals[:stubTableDef.Pkeys]...)
 		wantkey = encodeKey(stubTableDef.Prefixes[1], newSecVal)
 
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.True(t, ok, "new seconday index is not present")
 	})
 }
 
 func TestDelete(t *testing.T) {
-
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
-	insertStubTableDefination(t, kvstore, *stubTableDef)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
+	insertStubTableDefination(t, store, *stubTableDef)
 	t.Run("delete non existent value", func(t *testing.T) {
 		rec := getStubRecord()
 		pksrec := getPKs(*rec, stubTableDef.Pkeys)
 
-		ok, err := db.Delete("stub", *pksrec)
-		require.Error(t, err, "deleting non existent value")
+		ok := tx.Delete("stub", *pksrec)
 		assert.False(t, ok, "deleting non existent value")
 	})
 
 	t.Run("deleting a value", func(t *testing.T) {
 		// insert a new record
-		db.Insert(stubTableDef.Name, *getStubRecord())
+		tx.Insert(stubTableDef.Name, *getStubRecord())
 
-		fmt.Println(kvstore.store)
+		fmt.Println(store)
 		// delete the record
 		pksrec := getPKs(*getStubRecord(), stubTableDef.Pkeys)
-		ok, err := db.Delete("stub", *pksrec)
-		require.NoError(t, err, "deleting a value")
+		ok := tx.Delete("stub", *pksrec)
 		assert.True(t, ok, "deleting a value")
 
 		// check kvstore if the value still exists
 		key := encodeKey(stubTableDef.Prefixes[0], pksrec.Vals)
-		_, ok = kvstore.store[string(key)]
+		_, ok = store[string(key)]
 		assert.False(t, ok, "value still exists")
 
 		// check if the seconday index still exists
@@ -351,10 +358,10 @@ func TestDelete(t *testing.T) {
 		vals = append(vals, getStubRecord().Vals[:stubTableDef.Pkeys]...)
 
 		wantkey := encodeKey(stubTableDef.Prefixes[1], vals)
-		_, ok = kvstore.store[string(wantkey)]
+		_, ok = store[string(wantkey)]
 		assert.False(t, ok, "seconday index still exists")
 
-		fmt.Println(kvstore.store)
+		fmt.Println(store)
 	})
 }
 
@@ -381,25 +388,29 @@ func TestDataSerialization(t *testing.T) {
 }
 
 func TestTableNew(t *testing.T) {
-	kvstore := NewStubStore()
-	db := NewDB("/tmp/", kvstore)
+	store := make(map[string][]byte)
+	tx := &DBTX{
+		kv: &stubTX{
+			store: store,
+		},
+	}
 
 	t.Run("inserting a new table defination", func(t *testing.T) {
 		// insert new table defination
-		err := db.TableNew(stubTableDef)
+		err := tx.TableNew(stubTableDef)
 		require.NoError(t, err, "inserting new table")
 
 		// check if the table defination is present in kvstore
 		rec := &Record{}
 		rec.AddStr("name", []byte(stubTableDef.Name))
-		ok, err := db.Get("@table", rec)
+		ok, err := tx.Get("@table", rec)
 		require.NoError(t, err, "getting table defination")
 		assert.True(t, ok, "getting talble defination")
 	})
 
 	t.Run("trying to reinsert table defination", func(t *testing.T) {
 		// inserting a table again should throw an error
-		err := db.TableNew(stubTableDef)
+		err := tx.TableNew(stubTableDef)
 		assert.Error(t, err, "reinserting table defination")
 	})
 
@@ -407,13 +418,13 @@ func TestTableNew(t *testing.T) {
 		// new table defination
 		modtdef := *stubTableDef
 		modtdef.Name = "stub1"
-		err := db.TableNew(&modtdef)
+		err := tx.TableNew(&modtdef)
 		fmt.Println(modtdef.Prefixes)
 		require.NoError(t, err, "inserting new table defination")
 
-		oldtdef, err := getTableDef(db, "stub")
+		oldtdef, err := getTableDef(tx, "stub")
 		require.NoError(t, err, "getting old table defination")
-		newtdef, err := getTableDef(db, "stub1")
+		newtdef, err := getTableDef(tx, "stub1")
 		require.NoError(t, err, "getting new table defination")
 
 		assert.NotEqual(t, oldtdef.Prefixes, newtdef.Prefixes, "table prefix's are equal")
@@ -428,7 +439,10 @@ func TestIterator(t *testing.T) {
 	store, err := kv.NewKv(loc)
 	require.NoError(t, err, "creating kv store")
 	db := NewDB(util.NewTempFileLoc(), store)
-
+	tx := &DBTX{
+		kv: &kv.KVTX{},
+	}
+	db.Begin(tx)
 	// insert tabel defination
 	testTable := &TableDef{
 		Name:    "test",
@@ -438,7 +452,7 @@ func TestIterator(t *testing.T) {
 		Pkeys:   1,
 	}
 
-	err = db.TableNew(testTable)
+	err = tx.TableNew(testTable)
 	require.NoError(t, err, "insertion table defination")
 
 	// insert stub key value pairs
@@ -452,9 +466,8 @@ func TestIterator(t *testing.T) {
 		val := make([]byte, valSize)
 		copy(val, []byte(fmt.Sprintf("row: %d", i)))
 		rec.AddStr("name", val)
-		ok, err := db.Insert("test", *rec)
+		err := tx.Insert("test", *rec)
 		require.NoError(t, err, "inserting new row")
-		assert.True(t, ok)
 	}
 
 	startIdx := int64(500)
@@ -469,7 +482,7 @@ func TestIterator(t *testing.T) {
 	endRec.AddI64("id", endIdx)
 	endRec.AddI64("number", int64(count)-endIdx)
 
-	sc := db.NewScanner(*testTable, *startRec, *endRec, 0)
+	sc := tx.NewScanner(*testTable, *startRec, *endRec, 0)
 
 	t.Run("Dref returns current Row", func(t *testing.T) {
 		gotRec, err := sc.Deref()
@@ -533,7 +546,7 @@ func TestIterator(t *testing.T) {
 
 	t.Run("scanning of secondary indexes is performed in accordance with the sequence of the secondary index values.", func(t *testing.T) {
 		// testing scanning of seconday indexex
-		sc = db.NewScanner(*testTable, *startRec, *endRec, 1)
+		sc = tx.NewScanner(*testTable, *startRec, *endRec, 1)
 		// here the seconday index is number
 		// number field of startRec is > then the number field of endRec
 		// so the scan should begin from endRec upto startRec
@@ -571,7 +584,7 @@ func getStubRecord() *Record {
 	return stubRecord
 }
 
-func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef TableDef) {
+func insertStubTableDefination(t testing.TB, store map[string][]byte, stubTableDef TableDef) {
 	t.Helper()
 	// create table defination record to insert into store
 	tdefRec := &Record{}
@@ -584,14 +597,14 @@ func insertStubTableDefination(t testing.TB, kvstore *stubStore, stubTableDef Ta
 	key := encodeKey(TDEF_TABLE.Prefixes[0], tdefRec.Vals[:stubTableDef.Pkeys])
 	val, err := json.Marshal(tdefRec.Vals[stubTableDef.Pkeys:])
 	require.NoError(t, err, "marshalling table defination record")
-	kvstore.store[string(key)] = val
+	store[string(key)] = val
 }
 
-func insertRecord(t testing.TB, kvstore *stubStore, stubRecord *Record) {
+func insertRecord(t testing.TB, store map[string][]byte, stubRecord *Record) {
 	t.Helper()
 
 	key := encodeKey(stubTableDef.Prefixes[0], stubRecord.Vals[:stubTableDef.Pkeys])
 	val, err := json.Marshal(stubRecord.Vals[stubTableDef.Pkeys:])
 	require.NoError(t, err, "marshalling data")
-	kvstore.store[string(key)] = val
+	store[string(key)] = val
 }

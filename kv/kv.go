@@ -29,12 +29,15 @@ type Iterator interface {
 	Valid() bool
 }
 
-// type KVTX interface {
-// 	Seek(key []byte) Iterator
-// 	Get(key []byte) ([]byte, error)
-// 	Set(key []byte, val []byte)
-// 	Del(key []byte) bool
-// }
+// kv interface
+type KVInterface interface {
+	Abort(tx *KVTX)
+	Begin(tx *KVTX)
+	Close()
+	Commit(tx *KVTX) error
+	Open() error
+	PrintTree()
+}
 
 // kv transaction
 type KVTX struct {
@@ -110,7 +113,7 @@ func (kv *KV) Commit(tx *KVTX) error {
 	return nil
 }
 
-func NewKv(loc string) (*KV, error) {
+func NewKv(loc string) (KVInterface, error) {
 
 	newfile := false
 	if _, err := os.Stat(loc); errors.Is(err, os.ErrNotExist) {

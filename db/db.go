@@ -110,12 +110,10 @@ var TDEF_META = &TableDef{
 }
 
 type KVStore interface {
+	Begin(*kv.KVTX)
+	Abort(*kv.KVTX)
+	Commit(*kv.KVTX) error
 	Close()
-	Del(key []byte) (bool, error)
-	Get(key []byte) ([]byte, error)
-	Open() error
-	Set(key []byte, val []byte) error
-	Seek(key []byte) kv.Iterator
 }
 
 type Scanner struct {
@@ -125,7 +123,7 @@ type Scanner struct {
 	Tdef TableDef
 
 	index int
-	db    *DB
+	db    *DBTX
 	// keys in bytes for faster comparition
 	key1 []byte
 	key2 []byte
@@ -211,6 +209,58 @@ type DB struct {
 	kv   KVStore
 }
 
+type KVTX interface {
+	Del(key []byte) bool
+	Get(key []byte) ([]byte, error)
+	Seek(key []byte) kv.Iterator
+	Set(key []byte, val []byte)
+}
+
+type TX interface {
+	Delete(table string, rec Record) bool
+	Get(table string, rec *Record) (bool, error)
+	Insert(table string, rec Record) error
+	NewScanner(tdef TableDef, key1 Record, key2 Record, idx int) *Scanner
+	TableNew(tdef *TableDef) error
+	Update(table string, rec Record) bool
+	Upsert(table string, rec Record) bool
+}
+
+type DBTX struct {
+	kv KVTX
+	db *DB
+}
+
+func (db *DB) NewTX() *DBTX {
+	return &DBTX{
+		kv: &kv.KVTX{},
+	}
+}
+func (db *DB) Begin(tx *DBTX) {
+	tx.db = db
+	kvTX, ok := tx.kv.(*kv.KVTX)
+	if !ok {
+		panic("Invalid type for tx.kv; expected *kv.KVTX")
+	}
+	db.kv.Begin(kvTX)
+}
+
+func (db *DB) Commit(tx *DBTX) error {
+	kvTX, ok := tx.kv.(*kv.KVTX)
+	if !ok {
+		panic("Invalid type for tx.kv; expected *kv.KVTX")
+	}
+	return db.kv.Commit(kvTX)
+}
+
+func (db *DB) Abort(tx *DBTX) {
+	kvTX, ok := tx.kv.(*kv.KVTX)
+	if !ok {
+		panic("Invalid type for tx.kv; expected *kv.KVTX")
+	}
+	db.kv.Abort(kvTX)
+}
+
 func NewDB(path string, kv KVStore) *DB {
 	return &DB{
 		Path: path,
@@ -222,7 +272,7 @@ func NewDB(path string, kv KVStore) *DB {
 // though the valus from key1 to key2, in ascending order
 // if key2 is less then key1, iterator starts from key2 and
 // goes upto key1
-func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
+func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 
 	var key1Bytes []byte
 	var key2Bytes []byte
@@ -270,7 +320,7 @@ func (db *DB) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 	return sc
 }
 
-func (db *DB) TableNew(tdef *TableDef) error {
+func (db *DBTX) TableNew(tdef *TableDef) error {
 
 	// create record to store the table defination
 	rec := &Record{}
@@ -310,13 +360,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 
 	// update the prefix to the new value
 	prefixrec.AddI64("data", curPrefix)
-	ok, err := dbSet(db, TDEF_META, *prefixrec)
-	if err != nil {
-		return fmt.Errorf("inserting prefix: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("inserting prefix")
-	}
+	dbSet(db, TDEF_META, *prefixrec)
 
 	data, err := json.Marshal(tdef)
 	if err != nil {
@@ -325,13 +369,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 	rec.AddStr("def", data)
 
 	// insert table defination on @table
-	ok, err = dbSet(db, TDEF_TABLE, *rec)
-	if err != nil {
-		return fmt.Errorf("inserting table defination: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("inserting table defination")
-	}
+	dbSet(db, TDEF_TABLE, *rec)
 	return nil
 }
 
@@ -339,7 +377,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 // the primary keys, the columns(attribute) which are not primary keys
 // are added by the Get func into the rec itself
 // the rec can be further used to get the column values
-func (db *DB) Get(table string, rec *Record) (bool, error) {
+func (db *DBTX) Get(table string, rec *Record) (bool, error) {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
 		return false, err
@@ -354,13 +392,13 @@ func (db *DB) Get(table string, rec *Record) (bool, error) {
 // if the value already exists error is thrown
 // here the record should contain all the requied columns along with there values
 // fist 'n' columns should always be the primary keys
-func (db *DB) Insert(table string, rec Record) (bool, error) {
+func (db *DBTX) Insert(table string, rec Record) error {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if tdef == nil {
-		return false, fmt.Errorf("table not found: %s", table)
+		return fmt.Errorf("table not found: %s", table)
 	}
 
 	// create a new temp record to try getting the value
@@ -381,58 +419,52 @@ func (db *DB) Insert(table string, rec Record) (bool, error) {
 		return dbSet(db, tdef, rec)
 	}
 
-	return false, fmt.Errorf("key already exists")
+	return fmt.Errorf("key already exists")
 }
 
 // Update updates preexisting record in the given table
 // to the new record provided
 // if the record does not exists, error is thrown
-func (db *DB) Update(table string, rec Record) (bool, error) {
+func (db *DBTX) Update(table string, rec Record) bool {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
-		return false, fmt.Errorf("getting table defination: %s", err)
+		return false
 	}
 	// try getting the value to check if it exists
 	getRec := getPKs(rec, tdef.Pkeys)
 	ok, _ := dbGet(db, tdef, getRec)
 	if !ok {
-		return false, fmt.Errorf("value does not exists")
+		return false
 	}
 
 	// if the value exists update the primary index
-	_, err = dbSet(db, tdef, rec)
-	if err != nil {
-		return false, fmt.Errorf("setting primary index: %w", err)
-	}
+	dbSet(db, tdef, rec)
 
 	// delete old seconday indexes
 	keys := getSecondaryIndexesKeys(tdef, *getRec)
 	for _, key := range keys {
-		_, err := db.kv.Del(key)
-		if err != nil {
-			return false, fmt.Errorf("deleting seconday index: %w", err)
+		ok := db.kv.Del(key)
+		if !ok {
+			return false
 		}
 	}
 
 	// insert new seconday indexex
 	keys = getSecondaryIndexesKeys(tdef, rec)
 	for _, key := range keys {
-		err := db.kv.Set(key, []byte{})
-		if err != nil {
-			return false, fmt.Errorf("deleting seconday index: %w", err)
-		}
+		db.kv.Set(key, []byte{})
 	}
 
-	return true, nil
+	return true
 }
 
 // Upsert tries to update the value if it does not exist
 // it inserts a new value, here the record is assumed to
 // contain all the attributes(columns) of the table
-func (db *DB) Upsert(table string, rec Record) (bool, error) {
+func (db *DBTX) Upsert(table string, rec Record) bool {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
-		return false, fmt.Errorf("getting table defination: %s", err)
+		return false
 	}
 
 	// if row exists update else insert
@@ -441,33 +473,38 @@ func (db *DB) Upsert(table string, rec Record) (bool, error) {
 	if ok {
 		return db.Update(table, rec)
 	} else {
-		return db.Insert(table, rec)
+		err := db.Insert(table, rec)
+		if err != nil {
+			fmt.Errorf("inserting record: %w", err)
+			return false
+		}
 	}
+	return true
 }
 
 // Delete deletes the record entry from the table
 // throws an error if the record does not exists
 // here the record is assumed to contain all the primary keys
-func (db *DB) Delete(table string, rec Record) (bool, error) {
+func (db *DBTX) Delete(table string, rec Record) bool {
 	tdef, err := getTableDef(db, table)
 	if err != nil {
-		return false, fmt.Errorf("getting table defination: %s", err)
+		return false
 	}
 	return dbDel(db, tdef, rec)
 }
 
-func dbDel(db *DB, tdef *TableDef, rec Record) (bool, error) {
+func dbDel(db *DBTX, tdef *TableDef, rec Record) bool {
 	// get the record values
 	values, err := getRecordVals(tdef, rec, tdef.Pkeys)
 	if err != nil {
-		return false, fmt.Errorf("getting record values: %w", err)
+		return false
 	}
 
 	// encode the primary keys and table prefix to get the key
 	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 	ok, err := dbGet(db, tdef, &rec)
 	if !ok {
-		return false, fmt.Errorf("value doest not exist: %w", err)
+		return false
 	}
 
 	// the rec that is given may only contain the primary keys
@@ -478,9 +515,9 @@ func dbDel(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	if len(tdef.Indexes) > 1 {
 		keys := getSecondaryIndexesKeys(tdef, rec)
 		for _, k := range keys {
-			_, err := db.kv.Del(k)
-			if err != nil {
-				return false, fmt.Errorf("deleting seconday keys: %w", err)
+			ok := db.kv.Del(k)
+			if !ok {
+				return false
 			}
 		}
 	}
@@ -488,11 +525,11 @@ func dbDel(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	return db.kv.Del(key)
 }
 
-func dbSet(db *DB, tdef *TableDef, rec Record) (bool, error) {
+func dbSet(db *DBTX, tdef *TableDef, rec Record) error {
 	// get the record values
 	values, err := getRecordVals(tdef, rec, tdef.Pkeys)
 	if err != nil {
-		return false, fmt.Errorf("getting record values: %w", err)
+		return fmt.Errorf("getting record values: %w", err)
 	}
 
 	// get the encoded key
@@ -500,23 +537,17 @@ func dbSet(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 	val := encodeVal(values[tdef.Pkeys:])
 
-	err = db.kv.Set(key, val)
-	if err != nil {
-		return false, fmt.Errorf("error setting key value pair: %w", err)
-	}
+	db.kv.Set(key, val)
 
 	// setting the secondary indexes
 	// seconday indexes does not hagetSecondaryIndexesKeysve any value
 	if len(tdef.Indexes) > 1 {
 		keys := getSecondaryIndexesKeys(tdef, rec)
 		for _, k := range keys {
-			err = db.kv.Set(k, []byte{})
-			if err != nil {
-				return false, fmt.Errorf("error setting key value pair: %w", err)
-			}
+			db.kv.Set(k, []byte{})
 		}
 	}
-	return true, nil
+	return nil
 }
 
 // getSecondaryIndexesKeys returns slice of keys when represent keys
@@ -556,7 +587,7 @@ func getSecondaryIndexesKeys(tdef *TableDef, rec Record) [][]byte {
 // example: consider tuple <id, name, course, semester>
 // input rec: <id>
 // output rec: <id, name, course, semester>
-func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
+func dbGet(db *DBTX, tdef *TableDef, rec *Record) (bool, error) {
 	// get the record values
 	values, err := getRecordVals(tdef, *rec, tdef.Pkeys)
 	if err != nil {
@@ -822,7 +853,7 @@ func getPKFromSecKey(tdef *TableDef, key []byte, idx int) *Record {
 }
 
 // getTableDef gets and returns the table defination
-func getTableDef(db *DB, table string) (*TableDef, error) {
+func getTableDef(db *DBTX, table string) (*TableDef, error) {
 	if table == "@table" {
 		return TDEF_TABLE, nil
 	} else if table == "@meta" {

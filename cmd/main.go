@@ -16,8 +16,12 @@ func main() {
 		log.Fatalf("creating kvstore: %s", err.Error())
 	}
 	defer kvstore.Close()
-	database := db.NewDB(loc, kvstore)
 
+	database := db.NewDB(loc, kvstore)
+	tx := database.NewTX()
+
+	// begin transaction
+	database.Begin(tx)
 	// new table defination
 	tdef := &db.TableDef{
 		Name:    "demo",
@@ -27,7 +31,7 @@ func main() {
 		Indexes: [][]string{{"id"}, {"number"}},
 	}
 
-	err = database.TableNew(tdef)
+	err = tx.TableNew(tdef)
 	if err != nil {
 		log.Fatalf("creating new table: %s", err.Error())
 	}
@@ -49,7 +53,7 @@ func main() {
 	// insert records
 	for i, rec := range records {
 		fmt.Println("inserting row:", i)
-		database.Insert("demo", rec)
+		tx.Insert("demo", rec)
 	}
 
 	// scan though 100 values
@@ -62,7 +66,7 @@ func main() {
 	endRec.AddI64("number", records[60].Vals[1].I64) // number
 
 	// scanner to scan rows from start record to end record
-	scanner := database.NewScanner(*tdef, *startRec, *endRec, 0)
+	scanner := tx.NewScanner(*tdef, *startRec, *endRec, 0)
 
 	fmt.Println("\n\nscanning though primary index:")
 	// scanning rows
@@ -75,7 +79,7 @@ func main() {
 		scanner.Next()
 	}
 
-	scanner = database.NewScanner(*tdef, *startRec, *endRec, 1)
+	scanner = tx.NewScanner(*tdef, *startRec, *endRec, 1)
 
 	fmt.Println("\n\nscanning though seconday index:")
 	// scanning rows
@@ -87,4 +91,7 @@ func main() {
 		fmt.Println("id: ", rec.Get("id").I64, " : ", "number: ", rec.Get("number").I64)
 		scanner.Next()
 	}
+
+	// commit transaction
+	database.Commit(tx)
 }
