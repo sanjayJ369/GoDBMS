@@ -1,11 +1,56 @@
 package util
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"log"
 
 	"github.com/google/uuid"
 )
+
+type set struct {
+	sha   hash.Hash
+	store map[string]bool
+}
+
+func (s *set) getHash(key []byte) []byte {
+	s.sha.Reset()
+	s.sha.Write(key)
+	return s.sha.Sum(nil)
+}
+
+func (s *set) Has(key []byte) bool {
+	key = s.getHash(key)
+	_, ok := s.store[string(key)]
+	return ok
+}
+
+func (s *set) Set(key []byte) bool {
+	key = s.getHash(key)
+	if s.Has(key) {
+		return false
+	}
+	s.store[string(key)] = true
+	return true
+}
+
+func (s *set) Del(key []byte) bool {
+	key = s.getHash(key)
+	if !s.Has(key) {
+		return false
+	}
+	delete(s.store, string(key))
+	return true
+}
+
+func NewSet() *set {
+	s := &set{
+		sha:   sha256.New(),
+		store: make(map[string]bool),
+	}
+	return s
+}
 
 func NewTempFileLoc() string {
 	id, err := uuid.NewUUID()
