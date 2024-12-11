@@ -95,7 +95,7 @@ func iterPrev(iter *BIter, level int) {
 		iter.pos[level]--
 	} else if level > 0 {
 		// there are no kv paris left in this node
-		// and if there is a sibiling nnode then go the sibiling node
+		// and if there is a sibiling node then go the sibiling node
 		iterPrev(iter, level-1)
 	} else {
 		// move past the last node
@@ -104,7 +104,7 @@ func iterPrev(iter *BIter, level int) {
 	}
 
 	// update path
-	if level+1 < len(iter.pos) {
+	if level+1 < len(iter.pos) && iter.pos[len(iter.pos)-1] != -1 {
 		node := iter.path[level]
 		knode := BNode(iter.tree.Get(node.getptr(uint16(iter.pos[level]))))
 		iter.path[level+1] = knode
@@ -355,6 +355,12 @@ func leafInsert(new BNode, old BNode, idx uint16, key, val []byte) {
 	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
 }
 
+func leafInsertStart(new BNode, old BNode, key, val []byte) {
+	new.setHeader(BNODE_LEAF, old.nkeys()+1)
+	nodeAppendKV(new, 0, 0, key, val)
+	nodeAppendRange(new, old, 1, 0, old.nkeys())
+}
+
 // leafUpdate updates the value of a key at a given index
 func leafUpdate(new BNode, old BNode, idx uint16, key, val []byte) {
 
@@ -534,12 +540,12 @@ func nodeSplit2(left BNode, right BNode, old BNode) uint16 {
 		return idx
 	} else {
 		idx := uint16(0)
+		halfSize := old.nbytes() / 2
 		size := uint16(HEADER)
-		for size < PAGE_SIZE {
+		for size < halfSize {
 			size += (old.kvPos(idx+1) - old.kvPos(idx)) + POINTER + OFFSET
 			idx++
 		}
-		idx--
 
 		left.setHeader(old.btype(), idx)
 		right.setHeader(old.btype(), old.nkeys()-idx)
@@ -687,7 +693,12 @@ func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 			leafUpdate(new, node, idx, key, val)
 		} else {
 			// insert a new kv pair into node
-			leafInsert(new, node, idx+1, key, val)
+			// check if the the new value is the smallest value
+			if cmp := bytes.Compare(key, node.getKey(0)); cmp < 0 && idx == 0 {
+				leafInsertStart(new, node, key, val)
+			} else {
+				leafInsert(new, node, idx+1, key, val)
+			}
 		}
 	case BNODE_NODE:
 		nodeInsert(tree, new, node, idx, key, val)
@@ -769,7 +780,6 @@ func (t *BTree) Insert(key, val []byte) {
 	}
 
 	if nsplit > 1 {
-
 		// root node is split
 		// create new root node
 		newRoot := BNode(make([]byte, PAGE_SIZE))

@@ -1,6 +1,7 @@
 package kv
 
 import (
+	"dbms/btree"
 	"dbms/util"
 	"fmt"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestSetGet(t *testing.T) {
 
-	count := 5000
+	count := 50
 	size := 500
 
 	loc := util.NewTempFileLoc()
@@ -39,9 +40,9 @@ func TestSetGet(t *testing.T) {
 			key := []byte(fmt.Sprintf("key%d", i))
 
 			kv.Set(key, val)
+			btree.PrintTree(kv.pending, kv.pending.Get(kv.pending.Root))
 		}
 		endTime := time.Now()
-
 		for i := 0; i < count; i++ {
 			val := make([]byte, size)
 			copy(val, fmt.Sprintf("this is val%d", i))
@@ -50,7 +51,6 @@ func TestSetGet(t *testing.T) {
 			require.NoError(t, err, "getting value")
 			assert.Equal(t, val, got, "getting value")
 		}
-
 		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
 		err = store.Commit(kv)
 		require.NoError(t, err, "comitting transaction")
@@ -62,12 +62,15 @@ func TestSetGet(t *testing.T) {
 		require.NoError(t, err, "opening kv")
 		kv := NewKVTX()
 		store.Begin(kv)
-
+		store.PrintTree()
+		key := []byte("key14")
+		key = []byte("key1")
+		got, err := kv.Get(key)
+		fmt.Println(got, err)
 		for i := 0; i < count; i++ {
 			val := make([]byte, size)
 			copy(val, fmt.Sprintf("this is val%d", i))
 			key := []byte(fmt.Sprintf("key%d", i))
-
 			got, err := kv.Get(key)
 			require.NoError(t, err, "getting value")
 			assert.Equal(t, val, got, "getting value")

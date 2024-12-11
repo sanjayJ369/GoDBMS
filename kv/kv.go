@@ -163,6 +163,9 @@ func (kv *KV) Commit(tx *KVTX) error {
 		if err != nil {
 			return fmt.Errorf("getting pending writes: %w", err)
 		}
+		if cmp := bytes.Compare([]byte(key), []byte("hello")); cmp == 0 {
+			fmt.Println("hello")
+		}
 		kv.tree.Insert([]byte(key), val)
 	}
 	btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))

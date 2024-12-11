@@ -421,6 +421,10 @@ func TestNodeUpdate(t *testing.T) {
 		assert.Equal(t, uint16(BNODE_LEAF), stubNode1.btype(), "checking node type")
 		assert.Equal(t, uint16(5), stubNode1.nkeys(), "checking number of keys in node")
 
+		PrintNode(stubNode1)
+		fmt.Println()
+		PrintNode(stubNode2)
+
 		compareNodes(t, stubNode1, stubNode2, 0, 0, idx)
 
 		// compare values at given index
@@ -695,7 +699,6 @@ func TestIterator(t *testing.T) {
 			assert.Equal(t, wantval, gotval)
 			iter.Prev()
 		}
-
 		// check if valid for last returns false
 		assert.False(t, iter.Valid(), "validator is returning true")
 
