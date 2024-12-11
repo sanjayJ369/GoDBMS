@@ -440,7 +440,7 @@ func TestIterator(t *testing.T) {
 	require.NoError(t, err, "creating kv store")
 	db := NewDB(util.NewTempFileLoc(), store)
 	tx := &DBTX{
-		kv: &kv.KVTX{},
+		kv: kv.NewKVTX(),
 	}
 	db.Begin(tx)
 	// insert tabel defination
@@ -469,7 +469,12 @@ func TestIterator(t *testing.T) {
 		err := tx.Insert("test", *rec)
 		require.NoError(t, err, "inserting new row")
 	}
-
+	err = db.Commit(tx)
+	require.NoError(t, err, "commiting trnsaction")
+	tx = &DBTX{
+		kv: kv.NewKVTX(),
+	}
+	db.Begin(tx)
 	startIdx := int64(500)
 	endIdx := int64(1000)
 	scanLen := endIdx - startIdx

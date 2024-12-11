@@ -5,21 +5,34 @@ import (
 	"bytes"
 	"dbms/btree"
 	"dbms/mmap"
+	"dbms/util"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"sync"
 )
 
 const DB_SIG = "Thanks,BuildYourOwnDbFromScratch"
 
-type KV struct {
-	Path string // path to the db file
+type CommitedTX struct {
+	version   uint64
+	kvVersion uint64
+	writes    map[string]bool
+	deletes   map[string]bool
+}
 
-	tree btree.BTree // Btree
-	fp   *os.File    // pointer to file
-	mmap mmap.Mmap   // mmap of the file
+type KV struct {
+	Path        string       // path to the db file
+	rootVersion uint64       // previous version of the current kv version
+	version     uint64       // version of the kv store, persisted to the disk
+	ongoing     []uint64     // currently ongoing tx (sorted)
+	tree        btree.BTree  // Btree
+	fp          *os.File     // pointer to file
+	mmap        mmap.Mmap    // mmap of the file
+	history     []CommitedTX // commit history
+	mutex       sync.Mutex   // mutex to handle concurrencys
 }
 
 type Iterator interface {
@@ -41,8 +54,20 @@ type KVInterface interface {
 
 // kv transaction
 type KVTX struct {
-	db   *KV
-	tree struct {
+	db       *KV
+	snapshot btree.BTree // snapshot of current btree
+	pending  btree.BTree // to store updates made from transaction
+
+	delSet   *util.Set // to store deleted keys
+	writeSet *util.Set // to store modified keys
+	readSet  *util.Set // to store read keys
+
+	writes  map[string]bool
+	deletes map[string]bool
+
+	kvVersion uint64 // to store on which KV verstion the transaction is based on
+	version   uint64 // version of the transaction
+	tree      struct {
 		root uint64
 	}
 	free struct {
@@ -50,17 +75,55 @@ type KVTX struct {
 		headseq  uint64
 		tailpage uint64
 		tailseq  uint64
+		maxseq   uint64
+	}
+}
+
+func NewKVTX() *KVTX {
+	return &KVTX{
+		delSet:   util.NewSet(),
+		writeSet: util.NewSet(),
+		readSet:  util.NewSet(),
+		writes:   make(map[string]bool),
+		deletes:  make(map[string]bool),
 	}
 }
 
 func (kv *KV) Begin(tx *KVTX) {
-	tx.db = kv
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+	tx.snapshot = kv.tree
+	tx.delSet = util.NewSet()
+
+	tx.kvVersion = kv.version
+	if len(kv.ongoing) == 0 {
+		tx.version = kv.version + 1
+	} else {
+		// ongoing is sorted slice ordered according to trasaction number
+		tx.version = kv.ongoing[len(kv.ongoing)-1] + 1
+	}
+	kv.ongoing = append(kv.ongoing, tx.kvVersion)
+
+	pages := [][]byte(nil)
+	tx.pending.New = func(node []byte) uint64 {
+		pages = append(pages, node)
+		return uint64(len(pages))
+	}
+	tx.pending.Get = func(ptr uint64) []byte {
+		if int(ptr-1) >= len(pages) {
+			return nil
+		}
+		return pages[ptr-1]
+	}
+	tx.pending.Del = func(u uint64) {}
+
 	tx.tree.root = kv.tree.Root
 
 	tx.free.headpage = kv.mmap.FreeList.HeadPage
 	tx.free.headseq = kv.mmap.FreeList.HeadSeq
 	tx.free.tailpage = kv.mmap.FreeList.TailPage
 	tx.free.tailseq = kv.mmap.FreeList.TailSeq
+	tx.free.maxseq = kv.mmap.FreeList.MaxSeq
 }
 
 func rollback(kv *KV, tx *KVTX) {
@@ -71,23 +134,45 @@ func rollback(kv *KV, tx *KVTX) {
 	kv.mmap.FreeList.HeadSeq = tx.free.headseq
 	kv.mmap.FreeList.TailPage = tx.free.tailpage
 	kv.mmap.FreeList.TailSeq = tx.free.tailseq
+	kv.mmap.FreeList.MaxSeq = tx.free.maxseq
 
 	kv.mmap.NAppend = 0
 	kv.mmap.Updates = map[uint64][]byte{}
+
+	util.IntSliceRemove(tx.version, kv.ongoing)
 }
 
 func (kv *KV) Abort(tx *KVTX) {
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
 	rollback(kv, tx)
 }
 
 func (kv *KV) Commit(tx *KVTX) error {
-	if kv.tree.Root == tx.tree.root {
-		return nil
+	kv.mutex.Lock()
+	ok := detectConflicts(tx, kv)
+	if ok {
+		kv.mutex.Unlock()
+		kv.Abort(tx)
+		return fmt.Errorf("conflicts with other trnsactiosn")
 	}
 
+	// persist pending changes into the kv store
+	for key := range tx.writes {
+		val, err := tx.pending.GetVal([]byte(key))
+		if err != nil {
+			return fmt.Errorf("getting pending writes: %w", err)
+		}
+		kv.tree.Insert([]byte(key), val)
+	}
+	btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
+	for key := range tx.deletes {
+		kv.tree.Delete([]byte(key))
+	}
 	// write pages to disk
 	if err := writePages(kv); err != nil {
 		rollback(kv, tx)
+		kv.mutex.Unlock()
 		return fmt.Errorf("writing pages: %w", err)
 	}
 
@@ -95,22 +180,88 @@ func (kv *KV) Commit(tx *KVTX) error {
 	// data is persisted to the disk
 	if err := syncPages(kv); err != nil {
 		rollback(kv, tx)
+		kv.mutex.Unlock()
 		return fmt.Errorf("fsync: %w", err)
+	}
+
+	// changeing the root node pointer
+	// which makes the entire process atomic
+	if err := masterStore(kv); err != nil {
+		kv.mutex.Unlock()
+		return fmt.Errorf("storing master page: %w", err)
+	}
+	if err := kv.fp.Sync(); err != nil {
+		kv.mutex.Unlock()
+		return fmt.Errorf("fsync master page: %w", err)
 	}
 
 	kv.mmap.Flushed += kv.mmap.NAppend
 	kv.mmap.NAppend = 0
 	kv.mmap.Updates = map[uint64][]byte{}
+	kv.mmap.FreeList.MaxSeq = kv.mmap.FreeList.TailSeq
 
-	// changeing the root node pointer
-	// which makes the entire process atomic
-	if err := masterStore(kv); err != nil {
-		return fmt.Errorf("storing master page: %w", err)
+	if kv.version < tx.version {
+		kv.version = tx.version
 	}
-	if err := kv.fp.Sync(); err != nil {
-		return fmt.Errorf("fsync master page: %w", err)
-	}
+	// delete transaction from ongoing transactions
+	util.IntSliceRemove(tx.version, kv.ongoing)
+
+	// append commit hisotry
+	kv.history = append(kv.history, CommitedTX{
+		version:   tx.version,
+		kvVersion: tx.kvVersion,
+		writes:    tx.writes,
+		deletes:   tx.deletes,
+	})
+	kv.mutex.Unlock()
 	return nil
+}
+
+func detectConflicts(tx *KVTX, kv *KV) bool {
+	// trasaction is old..!
+	if tx.kvVersion < kv.rootVersion {
+		return true
+	}
+	// check if the transactions are spinned off from the
+	// same version of kv store
+	if tx.kvVersion == kv.rootVersion {
+		// check if there is a conflict between reads and writes of trasaction
+		if len(kv.history) > 0 {
+			old := kv.history[len(kv.history)-1]
+			return checkConflictTXHistory(tx, old)
+		}
+	}
+
+	return false
+}
+
+func checkConflictTXHistory(tx *KVTX, history CommitedTX) bool {
+	// check writes
+	for i := range history.writes {
+		if tx.readSet.Has([]byte(i)) {
+			return true
+		}
+		if tx.writeSet.Has([]byte(i)) {
+			return true
+		}
+		if tx.delSet.Has([]byte(i)) {
+			return true
+		}
+	}
+
+	// check deletes
+	for i := range history.deletes {
+		if tx.readSet.Has([]byte(i)) {
+			return true
+		}
+		if tx.writeSet.Has([]byte(i)) {
+			return true
+		}
+		if tx.delSet.Has([]byte(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 func NewKv(loc string) (KVInterface, error) {
@@ -205,19 +356,41 @@ func (k *KV) Close() {
 }
 
 func (k *KVTX) Seek(key []byte) Iterator {
-	return k.db.tree.SeekLE(key)
+	return k.snapshot.SeekLE(key)
 }
 
 func (k *KVTX) Get(key []byte) ([]byte, error) {
-	return k.db.tree.GetVal(key)
+	// check if the key has been delted
+	if k.delSet.Has(key) {
+		return nil, fmt.Errorf("getting deleted key")
+	}
+	k.readSet.Set(key)
+
+	val, err := k.pending.GetVal(key)
+	if err == nil {
+		return val, nil
+	}
+	return k.snapshot.GetVal(key)
 }
 
 func (k *KVTX) Set(key []byte, val []byte) {
-	k.db.tree.Insert(key, val)
+	if k.delSet.Has(key) {
+		log.Println("setting deleted key")
+		return
+	}
+	k.writeSet.Set(key)
+	k.writes[string(key)] = true
+	k.pending.Insert(key, val)
 }
 
 func (k *KVTX) Del(key []byte) bool {
-	return k.db.tree.Delete(key)
+	if k.delSet.Has(key) {
+		log.Println("deleting non exisiting key")
+		return false
+	}
+	k.delSet.Set(key)
+	k.deletes[string(key)] = true
+	return k.pending.Delete(key)
 }
 
 func flushpages(k *KV) error {

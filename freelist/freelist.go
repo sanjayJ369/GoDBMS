@@ -49,6 +49,8 @@ type Fl struct {
 	HeadSeq  uint64
 	TailPage uint64
 	TailSeq  uint64
+
+	MaxSeq uint64
 }
 
 func (fl *Fl) PopHead() uint64 {
@@ -131,6 +133,13 @@ func (fl *Fl) reset() {
 }
 
 func flpop(fl *Fl) (ptr uint64, head uint64) {
+	// check if head seq is less then max seq
+	// to not give always pages that are currently
+	// been read by older transactions
+	if fl.HeadSeq > fl.MaxSeq {
+		return
+	}
+
 	if fl.HeadSeq == fl.TailSeq {
 		ptr = fl.HeadPage
 		fl.reset()

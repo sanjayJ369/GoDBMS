@@ -38,7 +38,7 @@ type BTree struct {
 	Root uint64              // pointer to page
 	Get  func(uint64) []byte // get the page
 	New  func([]byte) uint64 // allocate a new page
-	Del  func(uint64)        // allocate87 a page
+	Del  func(uint64)        // delete a page
 }
 
 // BIter is used to iterate though the leaf nodes

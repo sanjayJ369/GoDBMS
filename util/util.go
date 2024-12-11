@@ -9,24 +9,24 @@ import (
 	"github.com/google/uuid"
 )
 
-type set struct {
+type Set struct {
 	sha   hash.Hash
 	store map[string]bool
 }
 
-func (s *set) getHash(key []byte) []byte {
+func (s *Set) getHash(key []byte) []byte {
 	s.sha.Reset()
 	s.sha.Write(key)
 	return s.sha.Sum(nil)
 }
 
-func (s *set) Has(key []byte) bool {
+func (s *Set) Has(key []byte) bool {
 	key = s.getHash(key)
 	_, ok := s.store[string(key)]
 	return ok
 }
 
-func (s *set) Set(key []byte) bool {
+func (s *Set) Set(key []byte) bool {
 	key = s.getHash(key)
 	if s.Has(key) {
 		return false
@@ -35,7 +35,7 @@ func (s *set) Set(key []byte) bool {
 	return true
 }
 
-func (s *set) Del(key []byte) bool {
+func (s *Set) Del(key []byte) bool {
 	key = s.getHash(key)
 	if !s.Has(key) {
 		return false
@@ -44,8 +44,8 @@ func (s *set) Del(key []byte) bool {
 	return true
 }
 
-func NewSet() *set {
-	s := &set{
+func NewSet() *Set {
+	s := &Set{
 		sha:   sha256.New(),
 		store: make(map[string]bool),
 	}
@@ -59,4 +59,12 @@ func NewTempFileLoc() string {
 	}
 
 	return fmt.Sprintf("/tmp/%d", id.ID())
+}
+
+func IntSliceRemove(key uint64, ls []uint64) {
+	for i := 0; i < len(ls); i++ {
+		if ls[i] == key {
+			ls = append(ls[:i], ls[i+1:]...)
+		}
+	}
 }

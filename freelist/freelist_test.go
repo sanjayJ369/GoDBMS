@@ -2,6 +2,7 @@ package freelist
 
 import (
 	"dbms/btree"
+	"fmt"
 	"log"
 	"testing"
 	"unsafe"
@@ -81,6 +82,29 @@ func TestFreelist(t *testing.T) {
 		assert.Equal(t, ptrs[1:], freePages, "pointers are not added")
 	})
 
+	t.Run("test pop upto maxseq", func(t *testing.T) {
+		fl := Fl{}
+		fl.Get = cache.Get
+		fl.Set = cache.Set
+		fl.New = cache.New
+
+		ptrs := []uint64{}
+		// insert 10 pages
+		for i := 0; i < 10; i++ {
+			page := make([]byte, btree.PAGE_SIZE)
+			ptr := cache.New(page)
+			ptrs = append(ptrs, ptr)
+			fl.PushTail(ptr)
+		}
+		fl.MaxSeq = fl.TailSeq / 2
+		fmt.Println(int(fl.MaxSeq - fl.HeadSeq))
+		// pop 10 pages
+		for i := 0; i < (int(fl.MaxSeq - fl.HeadSeq)); i++ {
+			ptr := fl.PopHead()
+			assert.Contains(t, ptrs, ptr)
+		}
+	})
+
 	t.Run("test pop head", func(t *testing.T) {
 		fl := Fl{}
 		fl.Get = cache.Get
@@ -95,7 +119,7 @@ func TestFreelist(t *testing.T) {
 			ptrs = append(ptrs, ptr)
 			fl.PushTail(ptr)
 		}
-
+		fl.MaxSeq = fl.TailSeq
 		// pop 10 pages
 		for i := 0; i < 10; i++ {
 			ptr := fl.PopHead()

@@ -17,7 +17,7 @@ func TestSetGet(t *testing.T) {
 
 	loc := util.NewTempFileLoc()
 	store, err := NewKv(loc)
-	kv := &KVTX{}
+	kv := NewKVTX()
 	store.Begin(kv)
 	require.NoError(t, err, "creating new kv")
 
@@ -52,15 +52,16 @@ func TestSetGet(t *testing.T) {
 		}
 
 		fmt.Printf("\ntime taken(%d): %ds\n", count, endTime.Second()-startTime.Second())
-		store.Commit(kv)
+		err = store.Commit(kv)
+		require.NoError(t, err, "comitting transaction")
 	})
 
 	t.Run("data is persisted to the disk", func(t *testing.T) {
 
 		store, err = NewKv(loc)
-		kv := &KVTX{}
-		store.Begin(kv)
 		require.NoError(t, err, "opening kv")
+		kv := NewKVTX()
+		store.Begin(kv)
 
 		for i := 0; i < count; i++ {
 			val := make([]byte, size)
