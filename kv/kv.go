@@ -67,9 +67,7 @@ type KVTX struct {
 
 	kvVersion uint64 // to store on which KV verstion the transaction is based on
 	version   uint64 // version of the transaction
-	tree      struct {
-		root uint64
-	}
+
 	free struct {
 		headpage uint64
 		headseq  uint64
@@ -92,8 +90,13 @@ func NewKVTX() *KVTX {
 func (kv *KV) Begin(tx *KVTX) {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
-	tx.snapshot = kv.tree
+	tx.snapshot.Root = kv.tree.Root
+	chunks := kv.mmap.Chunks
+	tx.snapshot.Get = func(ptr uint64) []byte {
+		return mmap.PageReadFile(ptr, chunks)
+	}
 	tx.delSet = util.NewSet()
+	tx.db = kv
 
 	tx.kvVersion = kv.version
 	if len(kv.ongoing) == 0 {
@@ -102,7 +105,7 @@ func (kv *KV) Begin(tx *KVTX) {
 		// ongoing is sorted slice ordered according to trasaction number
 		tx.version = kv.ongoing[len(kv.ongoing)-1] + 1
 	}
-	kv.ongoing = append(kv.ongoing, tx.kvVersion)
+	kv.ongoing = append(kv.ongoing, tx.version)
 
 	pages := [][]byte(nil)
 	tx.pending.New = func(node []byte) uint64 {
@@ -117,8 +120,6 @@ func (kv *KV) Begin(tx *KVTX) {
 	}
 	tx.pending.Del = func(u uint64) {}
 
-	tx.tree.root = kv.tree.Root
-
 	tx.free.headpage = kv.mmap.FreeList.HeadPage
 	tx.free.headseq = kv.mmap.FreeList.HeadSeq
 	tx.free.tailpage = kv.mmap.FreeList.TailPage
@@ -128,7 +129,7 @@ func (kv *KV) Begin(tx *KVTX) {
 
 func rollback(kv *KV, tx *KVTX) {
 	kv = tx.db
-	kv.tree.Root = tx.tree.root
+	kv.tree.Root = tx.snapshot.Root
 
 	kv.mmap.FreeList.HeadPage = tx.free.headpage
 	kv.mmap.FreeList.HeadSeq = tx.free.headseq
@@ -163,12 +164,8 @@ func (kv *KV) Commit(tx *KVTX) error {
 		if err != nil {
 			return fmt.Errorf("getting pending writes: %w", err)
 		}
-		if cmp := bytes.Compare([]byte(key), []byte("hello")); cmp == 0 {
-			fmt.Println("hello")
-		}
 		kv.tree.Insert([]byte(key), val)
 	}
-	btree.PrintTree(kv.tree, kv.tree.Get(kv.tree.Root))
 	for key := range tx.deletes {
 		kv.tree.Delete([]byte(key))
 	}
@@ -201,10 +198,11 @@ func (kv *KV) Commit(tx *KVTX) error {
 	kv.mmap.Flushed += kv.mmap.NAppend
 	kv.mmap.NAppend = 0
 	kv.mmap.Updates = map[uint64][]byte{}
-	kv.mmap.FreeList.MaxSeq = kv.mmap.FreeList.TailSeq
+	kv.mmap.FreeList.MaxSeq = kv.mmap.FreeList.HeadSeq
 
 	if kv.version < tx.version {
 		kv.version = tx.version
+		kv.rootVersion = tx.kvVersion
 	}
 	// delete transaction from ongoing transactions
 	util.IntSliceRemove(tx.version, kv.ongoing)
@@ -393,7 +391,10 @@ func (k *KVTX) Del(key []byte) bool {
 	}
 	k.delSet.Set(key)
 	k.deletes[string(key)] = true
-	return k.pending.Delete(key)
+	if k.writeSet.Has(key) {
+		return k.pending.Delete(key)
+	}
+	return true
 }
 
 func flushpages(k *KV) error {
@@ -460,8 +461,8 @@ func syncPages(k *KV) error {
 // |   signal  | ptr (root)| page used | fl-headpage | fl-headSeq | ...
 // | sig (32B) | root (8B) |    8B     |    8B       |    8B      |
 //
-// ... | fl-tailPage |   fl-tailSeq |
-//     | 	8B	     | 		8B	    |
+// ... | fl-tailPage |   fl-tailSeq |  rootVersion | version |
+//     | 	8B	     | 		8B	    |      8B      |   8B
 
 func masterLoad(db *KV) error {
 	// file is not present
@@ -486,11 +487,15 @@ func masterLoad(db *KV) error {
 	headSeq := binary.LittleEndian.Uint64(data[56:])
 	tailPage := binary.LittleEndian.Uint64(data[64:])
 	tailSeq := binary.LittleEndian.Uint64(data[72:])
+	rootVersion := binary.LittleEndian.Uint64(data[80:])
+	version := binary.LittleEndian.Uint64(data[88:])
 
 	db.mmap.FreeList.HeadPage = headPage
 	db.mmap.FreeList.HeadSeq = headSeq
 	db.mmap.FreeList.TailPage = tailPage
 	db.mmap.FreeList.TailSeq = tailSeq
+	db.rootVersion = rootVersion
+	db.version = version
 
 	// check signature
 	if !bytes.Equal(sig, []byte(DB_SIG)) {
@@ -508,7 +513,7 @@ func masterLoad(db *KV) error {
 }
 
 func masterStore(db *KV) error {
-	var data [80]byte
+	var data [96]byte
 
 	copy(data[:32], []byte(DB_SIG))
 	binary.LittleEndian.PutUint64(data[32:], db.tree.Root)
@@ -524,6 +529,10 @@ func masterStore(db *KV) error {
 	binary.LittleEndian.PutUint64(data[56:], headSeq)
 	binary.LittleEndian.PutUint64(data[64:], tailPage)
 	binary.LittleEndian.PutUint64(data[72:], tailSeq)
+
+	// write version data
+	binary.LittleEndian.PutUint64(data[80:], db.rootVersion)
+	binary.LittleEndian.PutUint64(data[88:], db.version)
 
 	_, err := db.fp.WriteAt(data[:], 0)
 	if err != nil {

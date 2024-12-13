@@ -108,8 +108,12 @@ func (m *Mmap) PageGet(pgIdx uint64) []byte {
 }
 
 func (m *Mmap) PageReadFile(pgIdx uint64) []byte {
+	return PageReadFile(pgIdx, m.Chunks)
+}
+
+func PageReadFile(pgIdx uint64, chunks [][]byte) []byte {
 	start := uint64(0)
-	for _, chunk := range m.Chunks {
+	for _, chunk := range chunks {
 		npages := len(chunk) / btree.PAGE_SIZE
 		end := start + uint64(npages)
 

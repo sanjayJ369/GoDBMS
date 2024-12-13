@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 )
 
 const (
@@ -609,17 +610,17 @@ func PrintNode(node BNode) {
 		fmt.Print("nil page")
 		return
 	}
-	// for i := uint16(0); i < node.nkeys(); i++ {
-	// 	fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
-	// 		func(r rune) bool {
-	// 			return r == bytes.Runes([]byte{0})[0]
-	// 		}))
-	// }
 	for i := uint16(0); i < node.nkeys(); i++ {
-		key := make([]byte, cap(node.getKey(i)))
-		copy(key, node.getKey(i))
-		fmt.Print("|", binary.BigEndian.Uint64(key))
+		fmt.Print("|", strings.TrimRightFunc(string(node.getKey(i)),
+			func(r rune) bool {
+				return r == bytes.Runes([]byte{0})[0]
+			}))
 	}
+	// for i := uint16(0); i < node.nkeys(); i++ {
+	// 	key := make([]byte, cap(node.getKey(i)))
+	// 	copy(key, node.getKey(i))
+	// 	fmt.Print("|", binary.BigEndian.Uint64(key))
+	// }
 	fmt.Print("|k:", node.nkeys(), "|", "\t")
 }
 
