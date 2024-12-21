@@ -1,9 +1,11 @@
 package kv
 
 import (
+	"bytes"
 	"dbms/btree"
 	"dbms/util"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -146,15 +148,7 @@ func TestConcurrentTransactions(t *testing.T) {
 		var values [][]byte
 		count := 100
 
-		// generate key value pairs
-		for i := 0; i < count; i++ {
-			key := []byte(fmt.Sprintf("key%d", i))
-			// size of the value is 500 bytes
-			value := make([]byte, 500)
-			copy(value, []byte(fmt.Sprintf("value: %d", i)))
-			keys = append(keys, key)
-			values = append(values, value)
-		}
+		keys, values = getKVPairs(count, 500, 0)
 
 		// insert kv pairs
 		for i := range count {
@@ -183,4 +177,87 @@ func TestConcurrentTransactions(t *testing.T) {
 			assert.Equal(t, values[i], val)
 		}
 	})
+}
+
+func TestCombinedIterator(t *testing.T) {
+
+	loc := util.NewTempFileLoc()
+	store, err := NewKv(loc)
+	require.NoError(t, err)
+
+	// create a new transaction and insert values for testing
+	tx := NewKVTX()
+	store.Begin(tx)
+	keys, values := getKVPairs(100, 500, 1)
+	// insert kv pairs
+	for i := range 100 {
+		tx.Set(keys[i], values[i])
+	}
+	store.Commit(tx)
+
+	t.Run("combined iterator can iteratore though not yet commited values", func(t *testing.T) {
+
+		writetx := NewKVTX()
+		store.Begin(writetx)
+		newKeys, newVals := getKVPairs(100, 500, 101)
+		for i := range len(newKeys) {
+			writetx.Set(newKeys[i], newVals[i])
+		}
+
+		// iterating newly inserted (not yet commited) values
+		iter := writetx.Seek(keys[0])
+		keys = append(keys, newKeys...)
+		values = append(values, newVals...)
+
+		sort.Slice(values, func(i, j int) bool {
+			cmp := bytes.Compare(values[i], values[j])
+			return cmp < 0
+		})
+		sort.Slice(keys, func(i, j int) bool {
+			cmp := bytes.Compare(keys[i], keys[j])
+			return cmp < 0
+		})
+
+		// check iterating to next values
+		i := 0
+		for iter.Valid() {
+			key, val := iter.Deref()
+			assert.Equal(t, keys[i], key)
+			assert.Equal(t, values[i], val)
+			iter.Next()
+			i++
+		}
+
+		fmt.Println("testing iterating backwords")
+		// check iterating to previous values
+		iter.Prev()
+		i--
+		for iter.Valid() {
+			key, val := iter.Deref()
+			assert.Equal(t, keys[i], key)
+			assert.Equal(t, values[i], val)
+			iter.Prev()
+			i--
+		}
+	})
+}
+
+// getKVPairs returns slice of keys and values,
+// key format: key(i) |
+// value format: value: (i)
+func getKVPairs(count int, valSize int, startVal int) ([][]byte, [][]byte) {
+	var keys [][]byte
+	var values [][]byte
+
+	// generate key value pairs
+	for i := 0; i < count; i++ {
+		key := []byte(fmt.Sprintf("key%d", startVal+i))
+		// size of the value is 500 bytes
+		value := make([]byte, valSize)
+		copy(value, []byte(fmt.Sprintf("value: %d", startVal+i)))
+		keys = append(keys, key)
+		values = append(values, value)
+	}
+
+	return keys, values
 }

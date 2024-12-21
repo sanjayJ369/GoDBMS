@@ -42,6 +42,76 @@ type Iterator interface {
 	Valid() bool
 }
 
+type CombinedIterator struct {
+	store Iterator // iteratoes through the commit values
+	tx    Iterator // iteratoes though the newly inserted value (not yet commited)
+}
+
+func (c *CombinedIterator) Next() {
+	k1, _ := c.store.Deref()
+	k2, _ := c.tx.Deref()
+	cmp := bytes.Compare(k1, k2)
+
+	if k1 == nil {
+		c.tx.Next()
+	} else if k2 == nil {
+		c.store.Next()
+	}
+
+	if cmp <= 0 || !c.tx.Valid() {
+		c.store.Next()
+	} else {
+		c.tx.Next()
+	}
+}
+
+func (c *CombinedIterator) Prev() {
+	c.store.Prev()
+	c.tx.Prev()
+	if !c.store.Valid() || !c.tx.Valid() {
+		return
+	}
+
+	k1, _ := c.store.Deref()
+	k2, _ := c.tx.Deref()
+	cmp := bytes.Compare(k1, k2)
+
+	if k1 == nil {
+		c.tx.Next()
+	} else if k2 == nil {
+		c.store.Next()
+	}
+
+	if cmp > 0 {
+		c.tx.Next()
+	} else {
+		c.store.Next()
+	}
+}
+
+func (c *CombinedIterator) Deref() ([]byte, []byte) {
+	k1, _ := c.store.Deref()
+	k2, _ := c.tx.Deref()
+	// of one of the tree is empty return other key
+	if k1 == nil {
+		return c.tx.Deref()
+	} else if k2 == nil {
+		return c.store.Deref()
+	}
+
+	cmp := bytes.Compare(k1, k2)
+	// fmt.Println(string(k1), "\t", string(k2), "\t", c.tx.Valid())
+	if cmp <= 0 || !c.tx.Valid() {
+		return c.store.Deref()
+	} else {
+		return c.tx.Deref()
+	}
+}
+
+func (c *CombinedIterator) Valid() bool {
+	return c.store.Valid() || c.tx.Valid()
+}
+
 // kv interface
 type KVInterface interface {
 	Abort(tx *KVTX)
@@ -357,7 +427,11 @@ func (k *KV) Close() {
 }
 
 func (k *KVTX) Seek(key []byte) Iterator {
-	return k.snapshot.SeekLE(key)
+	iter := &CombinedIterator{
+		store: k.snapshot.SeekLE(key),
+		tx:    k.pending.SeekLE(key),
+	}
+	return iter
 }
 
 func (k *KVTX) Get(key []byte) ([]byte, error) {

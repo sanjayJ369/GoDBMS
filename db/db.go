@@ -233,7 +233,7 @@ type DBTX struct {
 
 func (db *DB) NewTX() *DBTX {
 	return &DBTX{
-		kv: &kv.KVTX{},
+		kv: kv.NewKVTX(),
 	}
 }
 func (db *DB) Begin(tx *DBTX) {

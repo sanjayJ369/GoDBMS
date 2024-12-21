@@ -44,9 +44,10 @@ type BTree struct {
 
 // BIter is used to iterate though the leaf nodes
 type BIter struct {
-	tree *BTree  // pointer to Btree
-	path []BNode // slice of nodes that from root to leaf both inclusive
-	pos  []int32 // it indicates the index of child node
+	tree  *BTree  // pointer to Btree
+	path  []BNode // slice of nodes that from root to leaf both inclusive
+	pos   []int32 // it indicates the index of child node
+	valid bool
 }
 
 // checks if max node size can fit into a page
@@ -60,8 +61,30 @@ func init() {
 	}
 }
 
+func (i *BIter) LastNode() bool {
+	for p, node := range i.path {
+		nkeys := int32(node.nkeys())
+		if i.pos[p] != nkeys-1 {
+			return false
+		}
+	}
+	return true
+}
+
+func (i *BIter) StartNode() bool {
+	for p := range i.path {
+		if i.pos[p] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // return current key value pair
 func (i *BIter) Deref() ([]byte, []byte) {
+	if i.tree.Root == 0 {
+		return nil, nil
+	}
 	node := i.path[len(i.pos)-1]
 	idx := i.pos[len(i.pos)-1]
 	key := node.getKey(uint16(idx))
@@ -71,6 +94,10 @@ func (i *BIter) Deref() ([]byte, []byte) {
 
 // precondition of Deref()
 func (i *BIter) Valid() bool {
+	// if not valid or tree is empty
+	if !i.valid || i.tree.Root == 0 {
+		return false
+	}
 	node := i.path[len(i.pos)-1]
 	pos := i.pos[len(i.pos)-1]
 	if pos < 0 || uint16(pos) > node.nkeys()-1 {
@@ -81,10 +108,27 @@ func (i *BIter) Valid() bool {
 
 // functions to iterate forward and backward
 func (i *BIter) Next() {
+	// check if the btree is within the btree range
+	if i.LastNode() && i.valid {
+		i.valid = false
+		return
+	}
+	if i.StartNode() && !i.valid {
+		i.valid = true
+		return
+	}
 	iterNext(i, len(i.path)-1)
 }
 
 func (i *BIter) Prev() {
+	if i.StartNode() && i.valid {
+		i.valid = false
+		return
+	}
+	if i.LastNode() && !i.valid {
+		i.valid = true
+		return
+	}
 	iterPrev(i, len(i.path)-1)
 }
 
@@ -100,7 +144,7 @@ func iterPrev(iter *BIter, level int) {
 		iterPrev(iter, level-1)
 	} else {
 		// move past the last node
-		iter.pos[len(iter.pos)-1]--
+		iter.valid = false
 		return
 	}
 
@@ -125,7 +169,7 @@ func iterNext(iter *BIter, level int) {
 	} else {
 		// no, kv paris left to iterate
 		// past the last node
-		iter.pos[len(iter.pos)-1]++
+		iter.valid = false
 		return
 	}
 
@@ -655,7 +699,10 @@ func PrintTree(tree BTree, node BNode) {
 }
 
 func (tree *BTree) SeekCmp(key []byte, cmp int) *BIter {
-	iter := &BIter{tree: tree}
+	iter := &BIter{
+		tree:  tree,
+		valid: true,
+	}
 	for ptr := tree.Root; ptr != 0; {
 		node := BNode(tree.Get(ptr))
 		idx := nodeLookupCmp(node, key, cmp)
@@ -667,7 +714,7 @@ func (tree *BTree) SeekCmp(key []byte, cmp int) *BIter {
 }
 
 func (tree *BTree) SeekLE(key []byte) *BIter {
-	iter := &BIter{tree: tree}
+	iter := &BIter{tree: tree, valid: true}
 	for ptr := tree.Root; ptr != 0; {
 		node := BNode(tree.Get(ptr))
 		idx := nodeLookupLE(node, key)

@@ -7,9 +7,21 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"sync"
 )
 
+var tdef = &db.TableDef{
+	Name:    "demo",
+	Cols:    []string{"id", "number", "data"},
+	Types:   []uint32{db.TYPE_INT64, db.TYPE_INT64, db.TYPE_BYTES},
+	Pkeys:   1,
+	Indexes: [][]string{{"id"}, {"number"}},
+}
+
 func main() {
+
+	var wg sync.WaitGroup
+	// concurrent transactions demo
 	loc := util.NewTempFileLoc()
 	kvstore, err := kv.NewKv(loc)
 	if err != nil {
@@ -18,20 +30,54 @@ func main() {
 	defer kvstore.Close()
 
 	database := db.NewDB(loc, kvstore)
+	records := insertRecords(database)
+
+	// reading  trsaction
+	wg.Add(1)
+	go func() {
+		readtx := database.NewTX()
+		database.Begin(readtx)
+		// read values
+		for _, r := range records {
+			rec := &db.Record{}
+			rec.AddI64("id", r.Get("id").I64)
+			_, err := readtx.Get(tdef.Name, rec)
+			if err != nil {
+				fmt.Printf("getting record: %s", err)
+			}
+			fmt.Println("reading transaction: ", "id: ", rec.Get("id").I64, " number: ", rec.Get("number").I64)
+		}
+		database.Commit(readtx)
+		wg.Done()
+	}()
+
+	// write trsaction
+	wg.Add(1)
+	go func() {
+		writetx := database.NewTX()
+		database.Begin(writetx)
+		// read values
+		for _, r := range records {
+			rec := &db.Record{}
+			rec.AddI64("id", r.Get("id").I64)
+			writetx.Delete(tdef.Name, r)
+			fmt.Println("writed transaction: ", "id ", r.Get("id").I64, " deleted")
+		}
+		database.Commit(writetx)
+		wg.Done()
+	}()
+
+	wg.Wait()
+}
+
+// inserted records format
+// | id (int64) | number (int64) | data (string) |
+func insertRecords(database *db.DB) []db.Record {
 	tx := database.NewTX()
 
 	// begin transaction
 	database.Begin(tx)
-	// new table defination
-	tdef := &db.TableDef{
-		Name:    "demo",
-		Cols:    []string{"id", "number", "data"},
-		Types:   []uint32{db.TYPE_INT64, db.TYPE_INT64, db.TYPE_BYTES},
-		Pkeys:   1,
-		Indexes: [][]string{{"id"}, {"number"}},
-	}
-
-	err = tx.TableNew(tdef)
+	err := tx.TableNew(tdef)
 	if err != nil {
 		log.Fatalf("creating new table: %s", err.Error())
 	}
@@ -55,6 +101,22 @@ func main() {
 		fmt.Println("inserting row:", i)
 		tx.Insert("demo", rec)
 	}
+	database.Commit(tx)
+	return records
+}
+
+func iteratorDemo() {
+	loc := util.NewTempFileLoc()
+	kvstore, err := kv.NewKv(loc)
+	if err != nil {
+		log.Fatalf("creating kvstore: %s", err.Error())
+	}
+	defer kvstore.Close()
+
+	database := db.NewDB(loc, kvstore)
+	tx := database.NewTX()
+
+	records := insertRecords(database)
 
 	// scan though 100 values
 	startRec := &db.Record{}
@@ -91,7 +153,6 @@ func main() {
 		fmt.Println("id: ", rec.Get("id").I64, " : ", "number: ", rec.Get("number").I64)
 		scanner.Next()
 	}
-
 	// commit transaction
 	database.Commit(tx)
 }

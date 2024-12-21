@@ -3,7 +3,6 @@ package freelist
 import (
 	"dbms/btree"
 	"encoding/binary"
-	"fmt"
 )
 
 const (
@@ -59,9 +58,6 @@ func (fl *Fl) PopHead() uint64 {
 	// if the head is empty recycle the head node
 	if head != 0 {
 		fl.PushTail(head)
-	}
-	if ptr != 0 {
-		fmt.Println("pointer returned: ", ptr, " max: ", fl.MaxSeq, " head: ", fl.HeadSeq)
 	}
 	return ptr
 }
