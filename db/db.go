@@ -122,6 +122,10 @@ type Scanner struct {
 	Key2 Record
 	Tdef TableDef
 
+	// include keys or not
+	key1Include bool
+	key2Include bool
+
 	index int
 	db    *DBTX
 	// keys in bytes for faster comparition
@@ -146,11 +150,18 @@ func (sc *Scanner) Valid() bool {
 	// compare current key with range
 	key, _ := sc.iter.Deref()
 	cmp := bytes.Compare(key, sc.key1)
+	if cmp == 0 && !sc.key1Include {
+		return false
+	}
+
 	if cmp < 0 {
 		return false
 	}
 
 	cmp = bytes.Compare(key, sc.key2)
+	if cmp == 0 && !sc.key1Include {
+		return false
+	}
 	if cmp > 0 {
 		return false
 	}
@@ -272,7 +283,7 @@ func NewDB(path string, kv KVStore) *DB {
 // though the valus from key1 to key2, in ascending order
 // if key2 is less then key1, iterator starts from key2 and
 // goes upto key1
-func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
+func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bool, idx int) *Scanner {
 
 	var key1Bytes []byte
 	var key2Bytes []byte
@@ -305,18 +316,30 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, idx int) *Scanner {
 	if cmp > 0 {
 		key1Bytes, key2Bytes = key2Bytes, key1Bytes
 		key1, key2 = key2, key1
+		key1inc, key2inc = key2inc, key1inc
 	}
 
 	sc := &Scanner{
-		iter:  db.kv.Seek(key1Bytes),
-		Key1:  key1,
-		Key2:  key2,
-		Tdef:  tdef,
-		index: idx,
-		key1:  key1Bytes,
-		key2:  key2Bytes,
-		db:    db,
+		iter:        db.kv.Seek(key1Bytes),
+		Key1:        key1,
+		Key2:        key2,
+		Tdef:        tdef,
+		index:       idx,
+		key1:        key1Bytes,
+		key2:        key2Bytes,
+		key1Include: key1inc,
+		key2Include: key2inc,
+		db:          db,
 	}
+
+	key, _ := sc.iter.Deref()
+	cmp = bytes.Compare(key, sc.key1)
+	for cmp == 0 && !sc.key1Include {
+		sc.Next()
+		key, _ = sc.iter.Deref()
+		cmp = bytes.Compare(key, sc.key1)
+	}
+
 	return sc
 }
 

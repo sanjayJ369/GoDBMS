@@ -54,8 +54,10 @@ func (c *CombinedIterator) Next() {
 
 	if k1 == nil {
 		c.tx.Next()
+		return
 	} else if k2 == nil {
 		c.store.Next()
+		return
 	}
 
 	if cmp <= 0 || !c.tx.Valid() {

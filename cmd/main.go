@@ -32,6 +32,22 @@ func main() {
 	database := db.NewDB(loc, kvstore)
 	records := insertRecords(database)
 
+	// write trsaction
+	wg.Add(1)
+	go func() {
+		writetx := database.NewTX()
+		database.Begin(writetx)
+		// read values
+		for _, r := range records {
+			rec := &db.Record{}
+			rec.AddI64("id", r.Get("id").I64)
+			writetx.Delete(tdef.Name, r)
+			fmt.Println("writing transaction: ", "id ", r.Get("id").I64, " deleted")
+		}
+		database.Commit(writetx)
+		wg.Done()
+	}()
+
 	// reading  trsaction
 	wg.Add(1)
 	go func() {
@@ -51,22 +67,6 @@ func main() {
 		wg.Done()
 	}()
 
-	// write trsaction
-	wg.Add(1)
-	go func() {
-		writetx := database.NewTX()
-		database.Begin(writetx)
-		// read values
-		for _, r := range records {
-			rec := &db.Record{}
-			rec.AddI64("id", r.Get("id").I64)
-			writetx.Delete(tdef.Name, r)
-			fmt.Println("writed transaction: ", "id ", r.Get("id").I64, " deleted")
-		}
-		database.Commit(writetx)
-		wg.Done()
-	}()
-
 	wg.Wait()
 }
 
@@ -74,7 +74,6 @@ func main() {
 // | id (int64) | number (int64) | data (string) |
 func insertRecords(database *db.DB) []db.Record {
 	tx := database.NewTX()
-
 	// begin transaction
 	database.Begin(tx)
 	err := tx.TableNew(tdef)
@@ -128,7 +127,7 @@ func iteratorDemo() {
 	endRec.AddI64("number", records[60].Vals[1].I64) // number
 
 	// scanner to scan rows from start record to end record
-	scanner := tx.NewScanner(*tdef, *startRec, *endRec, 0)
+	scanner := tx.NewScanner(*tdef, *startRec, *endRec, true, true, 0)
 
 	fmt.Println("\n\nscanning though primary index:")
 	// scanning rows
@@ -141,7 +140,7 @@ func iteratorDemo() {
 		scanner.Next()
 	}
 
-	scanner = tx.NewScanner(*tdef, *startRec, *endRec, 1)
+	scanner = tx.NewScanner(*tdef, *startRec, *endRec, true, true, 1)
 
 	fmt.Println("\n\nscanning though seconday index:")
 	// scanning rows

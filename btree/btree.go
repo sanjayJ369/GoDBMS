@@ -698,21 +698,6 @@ func PrintTree(tree BTree, node BNode) {
 	fmt.Println()
 }
 
-func (tree *BTree) SeekCmp(key []byte, cmp int) *BIter {
-	iter := &BIter{
-		tree:  tree,
-		valid: true,
-	}
-	for ptr := tree.Root; ptr != 0; {
-		node := BNode(tree.Get(ptr))
-		idx := nodeLookupCmp(node, key, cmp)
-		iter.path = append(iter.path, node)
-		iter.pos = append(iter.pos, int32(idx))
-		ptr = node.getptr(idx)
-	}
-	return iter
-}
-
 func (tree *BTree) SeekLE(key []byte) *BIter {
 	iter := &BIter{tree: tree, valid: true}
 	for ptr := tree.Root; ptr != 0; {

@@ -487,7 +487,7 @@ func TestIterator(t *testing.T) {
 	endRec.AddI64("id", endIdx)
 	endRec.AddI64("number", int64(count)-endIdx)
 
-	sc := tx.NewScanner(*testTable, *startRec, *endRec, 0)
+	sc := tx.NewScanner(*testTable, *startRec, *endRec, true, true, 0)
 
 	t.Run("Dref returns current Row", func(t *testing.T) {
 		gotRec, err := sc.Deref()
@@ -551,7 +551,7 @@ func TestIterator(t *testing.T) {
 
 	t.Run("scanning of secondary indexes is performed in accordance with the sequence of the secondary index values.", func(t *testing.T) {
 		// testing scanning of seconday indexex
-		sc = tx.NewScanner(*testTable, *startRec, *endRec, 1)
+		sc = tx.NewScanner(*testTable, *startRec, *endRec, true, true, 1)
 		// here the seconday index is number
 		// number field of startRec is > then the number field of endRec
 		// so the scan should begin from endRec upto startRec
