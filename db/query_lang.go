@@ -97,6 +97,9 @@ func qlEval(ctx *QLEvalContext, node QLNode) {
 
 func qlNumeric(ctx *QLEvalContext, node *QLNode, ntype uint32) {
 	left, right, err := evalLeftRightKids(ctx, node)
+	if right == nil {
+		right = &Value{}
+	}
 	if err != nil {
 		return
 	}
@@ -109,7 +112,7 @@ func qlNumeric(ctx *QLEvalContext, node *QLNode, ntype uint32) {
 	out := Value{Type: QL_I64}
 	var res int64
 	a := left.I64
-	b := left.I64
+	b := right.I64
 	switch ntype {
 	case QL_ADD:
 		res = a + b
@@ -121,6 +124,8 @@ func qlNumeric(ctx *QLEvalContext, node *QLNode, ntype uint32) {
 		res = a / b
 	case QL_MOD:
 		res = a % b
+	case QL_NEG:
+		res = -a
 	default:
 		qlErr(ctx, "invalid node type: %d", ntype)
 		return
@@ -179,7 +184,7 @@ func qlCmp(ctx *QLEvalContext, node *QLNode, cmp uint32) {
 		return
 	}
 
-	if left.Type != QL_BOOL {
+	if left.Type != QL_I64 && left.Type != QL_STR {
 		qlErr(ctx, "invalid kid nodes: %v and %v", left, right)
 		return
 	}
@@ -190,8 +195,12 @@ func qlCmp(ctx *QLEvalContext, node *QLNode, cmp uint32) {
 		a := left.I64
 		b := right.I64
 		switch cmp {
-		case QL_CMP_GE, QL_CMP_LE:
-			if a == b {
+		case QL_CMP_GE:
+			if a == b || a > b {
+				res.I64 = 1
+			}
+		case QL_CMP_LE:
+			if a == b || a < b {
 				res.I64 = 1
 			}
 		case QL_CMP_GT:
@@ -209,8 +218,12 @@ func qlCmp(ctx *QLEvalContext, node *QLNode, cmp uint32) {
 		b := right.Str
 		c := strings.Compare(string(a), string(b))
 		switch cmp {
-		case QL_CMP_GE, QL_CMP_LE:
-			if c == 0 {
+		case QL_CMP_GE:
+			if c == 0 || c == 1 {
+				res.I64 = 1
+			}
+		case QL_CMP_LE:
+			if c == 0 || c == -1 {
 				res.I64 = 1
 			}
 		case QL_CMP_GT:
@@ -234,6 +247,11 @@ func evalLeftRightKids(ctx *QLEvalContext, node *QLNode) (*Value, *Value, error)
 	if ctxLeft.err != nil {
 		qlErr(ctx, "evaluvating node: %v: err: %w", node.Kids[0], ctxLeft.err)
 		return nil, nil, fmt.Errorf("evaluvating node: %v: err: %w", node.Kids[0], ctxLeft.err)
+	}
+
+	// nodes like neg have only one kid node
+	if len(node.Kids) == 1 {
+		return &ctxLeft.out, nil, nil
 	}
 
 	ctxRight := &QLEvalContext{env: ctx.env}
@@ -358,7 +376,7 @@ func pExprAnd(p *Parser, node *QLNode) {
 
 // cmp
 func pExprCmp(p *Parser, node *QLNode) {
-	pExprBinOp(p, node, []string{"<", ">", "<=", ">="}, []uint32{QL_CMP_LT, QL_CMP_GT, QL_CMP_LE, QL_CMP_GE}, pExprAdd)
+	pExprBinOp(p, node, []string{"<=", ">=", "<", ">"}, []uint32{QL_CMP_LE, QL_CMP_GE, QL_CMP_LT, QL_CMP_GT}, pExprAdd)
 }
 
 // add, sub
