@@ -159,7 +159,7 @@ func (sc *Scanner) Valid() bool {
 	}
 
 	cmp = bytes.Compare(key, sc.key2)
-	if cmp == 0 && !sc.key1Include {
+	if cmp == 0 && !sc.key2Include {
 		return false
 	}
 	if cmp > 0 {
@@ -333,8 +333,11 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bo
 	}
 
 	key, _ := sc.iter.Deref()
+	// rec, _ := sc.kvToRecord(&sc.Tdef, key, val, sc.index)
+	// fmt.Println(rec)
+
 	cmp = bytes.Compare(key, sc.key1)
-	for cmp == 0 && !sc.key1Include {
+	for cmp <= 0 && !sc.key1Include {
 		sc.Next()
 		key, _ = sc.iter.Deref()
 		cmp = bytes.Compare(key, sc.key1)
@@ -563,7 +566,7 @@ func dbSet(db *DBTX, tdef *TableDef, rec Record) error {
 	db.kv.Set(key, val)
 
 	// setting the secondary indexes
-	// seconday indexes does not hagetSecondaryIndexesKeysve any value
+	// seconday indexes does not haave getSecondaryIndexesKeys any value
 	if len(tdef.Indexes) > 1 {
 		keys := getSecondaryIndexesKeys(tdef, rec)
 		for _, k := range keys {
