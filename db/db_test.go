@@ -561,6 +561,7 @@ func TestIterator(t *testing.T) {
 		for i := 0; i < int(scanLen); i++ {
 			gotRec, err := sc.Deref()
 			sc.Next()
+			fmt.Println(i)
 			require.NoError(t, err, "dereferencing row")
 
 			wantRec := &Record{}

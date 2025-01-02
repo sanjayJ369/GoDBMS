@@ -302,8 +302,8 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bo
 			key2vals = append(key2vals, *val2)
 		}
 
-		key1vals = append(key1vals, key1.Vals[:tdef.Pkeys]...)
-		key2vals = append(key2vals, key2.Vals[:tdef.Pkeys]...)
+		// key1vals = append(key1vals, key1.Vals[:tdef.Pkeys]...)
+		// key2vals = append(key2vals, key2.Vals[:tdef.Pkeys]...)
 
 		key1Bytes = encodeKey(tdef.Prefixes[idx], key1vals)
 		key2Bytes = encodeKey(tdef.Prefixes[idx], key2vals)
@@ -317,6 +317,20 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bo
 		key1Bytes, key2Bytes = key2Bytes, key1Bytes
 		key1, key2 = key2, key1
 		key1inc, key2inc = key2inc, key1inc
+	}
+
+	if idx != 0 {
+		if key1inc {
+			key1Bytes = append(key1Bytes, byte(0x00))
+		} else {
+			key1Bytes = append(key1Bytes, byte(0xff))
+		}
+
+		if key2inc {
+			key2Bytes = append(key2Bytes, byte(0xff))
+		} else {
+			key2Bytes = append(key2Bytes, byte(0x00))
+		}
 	}
 
 	sc := &Scanner{
@@ -336,7 +350,14 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bo
 	// rec, _ := sc.kvToRecord(&sc.Tdef, key, val, sc.index)
 	// fmt.Println(rec)
 
+	// when derefercing a non-primary key
+	// we arrivate at a node previous to the actual node
+	// so we move a step ahead
 	cmp = bytes.Compare(key, sc.key1)
+	if cmp < 0 && idx != 0 {
+		sc.Next()
+	}
+
 	for cmp <= 0 && !sc.key1Include {
 		sc.Next()
 		key, _ = sc.iter.Deref()
