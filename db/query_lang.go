@@ -41,7 +41,7 @@ const (
 var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%",
-	">=", "<=", "==", ">", "<"}
+	">=", "<=", "==", ">", "<", "offset", "limit"}
 
 // isValidKeyword reports if input is a valid symbol(keyword)
 func isValidKeyword(s string) bool {
@@ -536,7 +536,7 @@ type QLScan struct {
 	Table  string // table name
 	Key1   *QLNode
 	Key2   *QLNode
-	Filter QLNode
+	Filter *QLNode
 	Offset int
 	Limit  int
 }
@@ -639,9 +639,13 @@ func pScan(p *Parser, node *QLScan) {
 		pIndexBy(p, node)
 	}
 	if pkeyword(p, "filter") {
-		pExprOr(p, &node.Filter)
+		node.Filter = &QLNode{}
+		pExprOr(p, node.Filter)
 	}
 	node.Offset, node.Limit = 0, math.MaxInt64
+	if pkeyword(p, "offset") {
+		pOffset(p, node)
+	}
 	if pkeyword(p, "limit") {
 		pLimit(p, node)
 	}
@@ -655,6 +659,16 @@ func pLimit(p *Parser, node *QLScan) {
 		pErr(p, &res, "expected number after limit")
 	}
 	node.Limit = int(res.I64)
+}
+
+func pOffset(p *Parser, node *QLScan) {
+	p.skipSpace()
+	res := QLNode{}
+	ok := pNum(p, &res)
+	if !ok {
+		pErr(p, &res, "expected number after offset")
+	}
+	node.Offset = int(res.I64)
 }
 
 func pSelect(p *Parser) *QLSelect {
@@ -850,13 +864,76 @@ func (iter *qlScanIter) Deref() (*Record, error) {
 		return nil, err
 	}
 	iter.rec = *rec
-	res := qlEvalRecord(rec, iter.req.Filter)
+	var res error
+	res = nil
+	if iter.req.Filter != nil {
+		res = qlEvalRecord(rec, *iter.req.Filter)
+	}
 	if res != nil {
 		iter.err = res
 		return nil, err
 	}
 	iter.err = nil
 	return rec, nil
+}
+
+type qlScanFilter struct {
+	sc     *qlScanIter
+	limit  int
+	offset int
+	idx    int
+}
+
+func newQlScanFilter(req *QLScan, tx *DBTX) (*qlScanFilter, error) {
+	sc, err := qlScanInit(req, tx)
+	if err != nil {
+		return nil, err
+	}
+	iterator := newQlScanIter(req, *sc)
+	filter := &qlScanFilter{
+		sc:     iterator,
+		limit:  req.Limit,
+		offset: req.Offset,
+		idx:    0,
+	}
+	for filter.idx != filter.offset {
+		filter.Next()
+	}
+	return filter, nil
+}
+
+func (iter *qlScanFilter) Valid() bool {
+	if iter.idx >= iter.limit {
+		return false
+	}
+	return iter.sc.Valid()
+}
+
+func (iter *qlScanFilter) Prev() {
+	if iter.idx >= 0 {
+		iter.idx--
+		iter.sc.Prev()
+		_, err := iter.sc.Deref()
+		for err != nil {
+			iter.Prev()
+			_, err = iter.sc.Deref()
+		}
+	}
+}
+
+func (iter *qlScanFilter) Next() {
+	iter.idx++
+	iter.sc.Next()
+	_, err := iter.sc.Deref()
+	for err != nil {
+		iter.Prev()
+		_, err = iter.sc.Deref()
+	}
+}
+
+func (iter *qlScanFilter) Deref() (Record, error) {
+	iter.sc.Deref()
+	return iter.sc.rec, iter.sc.err
 }
 
 func qlEvalRecord(rec *Record, expr QLNode) error {

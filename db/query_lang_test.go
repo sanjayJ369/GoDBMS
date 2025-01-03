@@ -688,6 +688,7 @@ func TestQLScan(t *testing.T) {
 		}
 		pkeyword(p, "select")
 		res := pSelect(p)
+		fmt.Println(res.Output)
 		assert.NoError(t, p.err)
 		sc, err := qlScanInit(&res.QLScan, tx)
 		iterator := newQlScanIter(&res.QLScan, *sc)
@@ -703,6 +704,33 @@ func TestQLScan(t *testing.T) {
 				assert.Less(t, rec.Get("c").I64, int64(6))
 			}
 			sc.Next()
+		}
+	})
+
+	t.Run("evaluvating select query with single condition and  offset, limit", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b from demo index by @id > 10 offset 5 limit 10"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		iterator, err := newQlScanFilter(&res.QLScan, tx)
+		assert.NoError(t, err)
+		// offset is 5
+		i := 11 + 5
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
+				" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
+			assert.Greater(t, rec.Get("id").I64, int64(10))
+			assert.Equal(t, int64(i), rec.Get("id").I64)
+			i += 1
+			iterator.Next()
 		}
 	})
 }
