@@ -474,7 +474,7 @@ func TestEvalFunctions(t *testing.T) {
 func TestPSelect(t *testing.T) {
 
 	t.Run("parsing select statement with 2 index by conditions", func(t *testing.T) {
-		expr := "select a, b from demo index by a > 10 and a <= 30"
+		expr := "select a as a1, b as a2 from demo index by a > 10 and a <= 30"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -486,8 +486,8 @@ func TestPSelect(t *testing.T) {
 		assert.Equal(t, "demo", res.Table)
 
 		// assert column names
-		assert.Equal(t, "a", res.Name[0])
-		assert.Equal(t, "b", res.Name[1])
+		assert.Equal(t, "a1", res.Name[0])
+		assert.Equal(t, "a2", res.Name[1])
 
 		// assert scanner nodes
 		key1node := res.Key1
@@ -497,7 +497,7 @@ func TestPSelect(t *testing.T) {
 	})
 
 	t.Run("parsing select statement with 1 index by conditions", func(t *testing.T) {
-		expr := "select a, b from demo index by a == 10"
+		expr := "select a as a1, b as a2 from demo index by a == 10"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -509,8 +509,8 @@ func TestPSelect(t *testing.T) {
 		assert.Equal(t, "demo", res.Table)
 
 		// assert column names
-		assert.Equal(t, "a", res.Name[0])
-		assert.Equal(t, "b", res.Name[1])
+		assert.Equal(t, "a1", res.Name[0])
+		assert.Equal(t, "a2", res.Name[1])
 
 		// assert scanner nodes
 		key1node := res.Key1
@@ -518,7 +518,7 @@ func TestPSelect(t *testing.T) {
 	})
 
 	t.Run("parsing select statement with no index by conditions(full table scan)", func(t *testing.T) {
-		expr := "select a, b from demo"
+		expr := "select a as a1, b as a2 from demo"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -530,8 +530,8 @@ func TestPSelect(t *testing.T) {
 		assert.Equal(t, "demo", res.Table)
 
 		// assert column names
-		assert.Equal(t, "a", res.Name[0])
-		assert.Equal(t, "b", res.Name[1])
+		assert.Equal(t, "a1", res.Name[0])
+		assert.Equal(t, "a2", res.Name[1])
 
 		// assert scanner nodes
 		assert.Nil(t, res.Key1)
@@ -673,10 +673,36 @@ func TestQLScan(t *testing.T) {
 			if err != nil {
 				log.Fatalf("derefercing row: %s", err.Error())
 			}
-			fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
-				" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
 			sc.Next()
 			assert.GreaterOrEqual(t, rec.Get("a").I64, int64(6))
+		}
+	})
+
+	t.Run("evaluvating select query with single condition (comparition) and filter", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b from demo index by @a >= 6 filter @c > 1 and @c < 6 and @b == 3"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		sc, err := qlScanInit(&res.QLScan, tx)
+		iterator := newQlScanIter(&res.QLScan, *sc)
+		assert.NoError(t, err)
+		for iterator.Valid() {
+			iterator.Deref()
+			rec := iterator.rec
+			err = iterator.err
+			if err == nil {
+				fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
+					" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
+				assert.Greater(t, rec.Get("c").I64, int64(1))
+				assert.Less(t, rec.Get("c").I64, int64(6))
+			}
+			sc.Next()
 		}
 	})
 }

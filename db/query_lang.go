@@ -39,7 +39,7 @@ const (
 )
 
 var KeyWords = []string{"create", "table", "select", "index", "by",
-	"insert", "into", "delete", "from", "update", ",",
+	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%",
 	">=", "<=", "==", ">", "<"}
 
@@ -689,7 +689,7 @@ func pSelectExprList(p *Parser, stmt *QLSelect) {
 func pSelectExpr(p *Parser, node *QLSelect) {
 	expr := QLNode{}
 	pExprOr(p, &expr)
-	name := string(expr.Str)
+	name := ""
 	if pkeyword(p, "as") {
 		name = pMustSym(p)
 	}
@@ -815,6 +815,67 @@ func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
 	return sc, nil
 }
 
+type qlScanIter struct {
+	req *QLScan
+	sc  Scanner
+	rec Record
+	err error
+}
+
+func newQlScanIter(req *QLScan, sc Scanner) *qlScanIter {
+	return &qlScanIter{
+		req: req,
+		sc:  sc,
+		rec: Record{},
+		err: nil,
+	}
+}
+
+func (iter *qlScanIter) Valid() bool {
+	return iter.sc.Valid()
+}
+
+func (iter *qlScanIter) Next() {
+	iter.sc.Next()
+}
+
+func (iter *qlScanIter) Prev() {
+	iter.sc.Prev()
+}
+
+func (iter *qlScanIter) Deref() (*Record, error) {
+	rec, err := iter.sc.Deref()
+	if err != nil {
+		iter.err = err
+		return nil, err
+	}
+	iter.rec = *rec
+	res := qlEvalRecord(rec, iter.req.Filter)
+	if res != nil {
+		iter.err = res
+		return nil, err
+	}
+	iter.err = nil
+	return rec, nil
+}
+
+func qlEvalRecord(rec *Record, expr QLNode) error {
+	ctx := QLEvalContext{
+		env: *rec,
+	}
+	qlEval(&ctx, expr)
+	if ctx.out.Type != QL_BOOL {
+		return fmt.Errorf("expression does not result in boolean outcome")
+	}
+
+	val := ctx.out
+	//invalid expression
+	if val.I64 == 0 {
+		return fmt.Errorf("invalid")
+	}
+	// valid expresssion
+	return nil
+}
 func addValToRecord(valType uint32, rec *Record, col string, val Value) error {
 	if valType == QL_STR {
 		rec.AddStr(string(col), val.Str)
