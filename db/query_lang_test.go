@@ -1,6 +1,11 @@
 package db
 
 import (
+	"dbms/kv"
+	"dbms/util"
+	"fmt"
+	"log"
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -268,6 +273,14 @@ func TestEvalFunctions(t *testing.T) {
 			ctx: QLEvalContext{},
 		},
 		{
+			input: "2 == 2",
+			Value: Value{
+				Type: QL_BOOL,
+				I64:  1,
+			},
+			ctx: QLEvalContext{},
+		},
+		{
 			input: "a <= a",
 			Value: Value{
 				Type: QL_BOOL,
@@ -444,12 +457,226 @@ func TestEvalFunctions(t *testing.T) {
 				input: []byte(expr.input),
 			}
 			node := QLNode{}
+			fmt.Println(expr.input)
+			if expr.input == "2 == 2" {
+				fmt.Println("breakpoint")
+			}
 			pExprTuple(&p, &node)
 			qlEval(&expr.ctx, node)
 			got := expr.ctx.out
 
 			assert.NoError(t, expr.ctx.err)
 			assert.Equal(t, expr.I64, got.I64)
+		}
+	})
+}
+
+func TestPSelect(t *testing.T) {
+
+	t.Run("parsing select statement with 2 index by conditions", func(t *testing.T) {
+		expr := "select a, b from demo index by a > 10 and a <= 30"
+		p := &Parser{
+			input: []byte(expr),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+
+		assert.NoError(t, p.err)
+		// assert table name
+		assert.Equal(t, "demo", res.Table)
+
+		// assert column names
+		assert.Equal(t, "a", res.Name[0])
+		assert.Equal(t, "b", res.Name[1])
+
+		// assert scanner nodes
+		key1node := res.Key1
+		key2node := res.Key2
+		assert.Equal(t, QL_CMP_GT, int(key1node.Type))
+		assert.Equal(t, QL_CMP_LE, int(key2node.Type))
+	})
+
+	t.Run("parsing select statement with 1 index by conditions", func(t *testing.T) {
+		expr := "select a, b from demo index by a == 10"
+		p := &Parser{
+			input: []byte(expr),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+
+		assert.NoError(t, p.err)
+		// assert table name
+		assert.Equal(t, "demo", res.Table)
+
+		// assert column names
+		assert.Equal(t, "a", res.Name[0])
+		assert.Equal(t, "b", res.Name[1])
+
+		// assert scanner nodes
+		key1node := res.Key1
+		assert.Equal(t, QL_CMP_EQ, int(key1node.Type))
+	})
+
+	t.Run("parsing select statement with no index by conditions(full table scan)", func(t *testing.T) {
+		expr := "select a, b from demo"
+		p := &Parser{
+			input: []byte(expr),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+
+		assert.NoError(t, p.err)
+		// assert table name
+		assert.Equal(t, "demo", res.Table)
+
+		// assert column names
+		assert.Equal(t, "a", res.Name[0])
+		assert.Equal(t, "b", res.Name[1])
+
+		// assert scanner nodes
+		assert.Nil(t, res.Key1)
+		assert.Nil(t, res.Key2)
+	})
+}
+
+func TestPScanFuncs(t *testing.T) {
+	t.Run("pIndexBy parser equallity condition", func(t *testing.T) {
+		expr := "a == 10"
+		p := &Parser{
+			input: []byte(expr),
+		}
+		sc := &QLScan{}
+
+		pIndexBy(p, sc)
+		kid1 := sc.Key1
+		lchild := kid1.Kids[0]
+		rchild := kid1.Kids[1]
+
+		assert.Equal(t, QL_CMP_EQ, int(kid1.Type))
+		assert.Equal(t, "a", string(lchild.Str))
+		assert.Equal(t, 10, int(rchild.I64))
+		assert.Nil(t, sc.Key2)
+	})
+
+	t.Run("pIndexBy parser comparition condition", func(t *testing.T) {
+		expr := "a > 10 and a < 20"
+		p := &Parser{
+			input: []byte(expr),
+		}
+		sc := &QLScan{}
+
+		pIndexBy(p, sc)
+		// checking first condition
+		kid := sc.Key1
+		lchild := kid.Kids[0]
+		rchild := kid.Kids[1]
+
+		assert.Equal(t, QL_CMP_GT, int(kid.Type))
+		assert.Equal(t, "a", string(lchild.Str))
+		assert.Equal(t, 10, int(rchild.I64))
+
+		// checking second condition
+		kid = sc.Key2
+		lchild = kid.Kids[0]
+		rchild = kid.Kids[1]
+
+		assert.Equal(t, QL_CMP_LT, int(kid.Type))
+		assert.Equal(t, "a", string(lchild.Str))
+		assert.Equal(t, 20, int(rchild.I64))
+
+	})
+}
+
+func TestQLScan(t *testing.T) {
+
+	loc := util.NewTempFileLoc()
+	kvstore, err := kv.NewKv(loc)
+	if err != nil {
+		log.Fatalf("creating kvstore: %s", err.Error())
+	}
+	defer kvstore.Close()
+
+	var tdef = &TableDef{
+		Name:    "demo",
+		Cols:    []string{"id", "a", "b", "c", "data"},
+		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+		Pkeys:   1,
+		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}},
+	}
+
+	database := NewDB(loc, kvstore)
+
+	_ = insertRecords(t, tdef, database)
+
+	t.Run("evaluvating select query", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b from demo index by @a > 5 and @a < 8"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		sc, err := qlScanInit(&res.QLScan, tx)
+		assert.NoError(t, err)
+		for sc.Valid() {
+			rec, err := sc.Deref()
+			if err != nil {
+				log.Fatalf("derefercing row: %s", err.Error())
+			}
+			sc.Next()
+			assert.Less(t, rec.Get("a").I64, int64(8))
+			assert.Greater(t, rec.Get("a").I64, int64(5))
+		}
+	})
+
+	t.Run("evaluvating select query with single condition (equality)", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b from demo index by @a == 6"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		sc, err := qlScanInit(&res.QLScan, tx)
+		assert.NoError(t, err)
+		for sc.Valid() {
+			rec, err := sc.Deref()
+			if err != nil {
+				log.Fatalf("derefercing row: %s", err.Error())
+			}
+			sc.Next()
+			assert.Equal(t, rec.Get("a").I64, int64(6))
+		}
+	})
+
+	t.Run("evaluvating select query with single condition (comparition)", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b from demo index by @a >= 6"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		sc, err := qlScanInit(&res.QLScan, tx)
+		assert.NoError(t, err)
+		for sc.Valid() {
+			rec, err := sc.Deref()
+			if err != nil {
+				log.Fatalf("derefercing row: %s", err.Error())
+			}
+			fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
+				" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
+			sc.Next()
+			assert.GreaterOrEqual(t, rec.Get("a").I64, int64(6))
 		}
 	})
 }
@@ -461,4 +688,45 @@ func assertNodeValue(t testing.TB, node QLNode, val Value) {
 	case QL_I64:
 		assert.Equal(t, int(val.I64), int(node.I64))
 	}
+}
+
+func insertRecords(t testing.TB, tdef *TableDef, database *DB) []Record {
+	t.Helper()
+	tx := database.NewTX()
+	// begin transaction
+	database.Begin(tx)
+	err := tx.TableNew(tdef)
+	if err != nil {
+		log.Fatalf("creating new table: %s", err.Error())
+	}
+
+	// create records
+	records := make([]Record, 0)
+	for i := 0; i < 100; i++ {
+		rec := &Record{}
+		rec.AddI64("id", int64(i))
+		rec.AddI64("a", int64(rand.IntN(11)))
+		rec.AddI64("b", int64(rand.IntN(11)))
+		rec.AddI64("c", int64(rand.IntN(11)))
+		val := make([]byte, 200)
+		// creating a value of size 200 bytes
+		// this is done to make sure multiple nodes are created
+		copy(val, []byte(fmt.Sprintf("some temp data: %d", i)))
+		rec.AddStr("data", val)
+		records = append(records, *rec)
+	}
+
+	// insert records
+	for _, rec := range records {
+		// fmt.Println("inserting row:", i)
+		err := tx.Insert(tdef.Name, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = database.Commit(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records
 }

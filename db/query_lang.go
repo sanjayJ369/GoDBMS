@@ -29,6 +29,7 @@ const (
 	QL_MUL    = 19 // *
 	QL_DIV    = 20 // /
 	QL_BOOL   = 21
+	QL_CMP_EQ = 22 // ==
 
 	// unary operators
 	QL_NEG = 30 // -
@@ -37,10 +38,10 @@ const (
 	QL_TUP = 40 // tuple
 )
 
-var KeyWords = []string{"create", "table", "select",
+var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%",
-	">=", "<=", ">", "<"}
+	">=", "<=", "==", ">", "<"}
 
 // isValidKeyword reports if input is a valid symbol(keyword)
 func isValidKeyword(s string) bool {
@@ -63,6 +64,8 @@ type Parser struct {
 	err   error
 }
 
+///////////////// expression tree evaluvation /////////////////
+
 type QLEvalContext struct {
 	env Record
 	out Value
@@ -79,7 +82,7 @@ func qlEval(ctx *QLEvalContext, node QLNode) {
 		} else {
 			qlErr(ctx, "unknown column: %s", node.Str)
 		}
-	case QL_CMP_GE, QL_CMP_LE, QL_CMP_LT, QL_CMP_GT:
+	case QL_CMP_GE, QL_CMP_LE, QL_CMP_LT, QL_CMP_GT, QL_CMP_EQ:
 		qlCmp(ctx, &node, node.Type)
 	case QL_OR, QL_AND:
 		qlOrAnd(ctx, &node, node.Type)
@@ -195,6 +198,10 @@ func qlCmp(ctx *QLEvalContext, node *QLNode, cmp uint32) {
 		a := left.I64
 		b := right.I64
 		switch cmp {
+		case QL_CMP_EQ:
+			if a == b {
+				res.I64 = 1
+			}
 		case QL_CMP_GE:
 			if a == b || a > b {
 				res.I64 = 1
@@ -218,6 +225,10 @@ func qlCmp(ctx *QLEvalContext, node *QLNode, cmp uint32) {
 		b := right.Str
 		c := strings.Compare(string(a), string(b))
 		switch cmp {
+		case QL_CMP_EQ:
+			if c == 0 {
+				res.I64 = 1
+			}
 		case QL_CMP_GE:
 			if c == 0 || c == 1 {
 				res.I64 = 1
@@ -278,6 +289,8 @@ func qlErr(ctx *QLEvalContext, args ...interface{}) {
 		ctx.err = fmt.Errorf(args[0].(string), args[1:]...)
 	}
 }
+
+///////////////// expression tree parsing /////////////////
 
 func (p *Parser) skipSpace() {
 	for p.idx < len(p.input) && p.input[p.idx] == byte(32) {
@@ -376,7 +389,7 @@ func pExprAnd(p *Parser, node *QLNode) {
 
 // cmp
 func pExprCmp(p *Parser, node *QLNode) {
-	pExprBinOp(p, node, []string{"<=", ">=", "<", ">"}, []uint32{QL_CMP_LE, QL_CMP_GE, QL_CMP_LT, QL_CMP_GT}, pExprAdd)
+	pExprBinOp(p, node, []string{"<=", ">=", "==", "<", ">"}, []uint32{QL_CMP_LE, QL_CMP_GE, QL_CMP_EQ, QL_CMP_LT, QL_CMP_GT}, pExprAdd)
 }
 
 // add, sub
@@ -509,6 +522,8 @@ func pErr(p *Parser, node *QLNode, msg string) {
 	}
 }
 
+///////////////// statements parsing /////////////////
+
 // possible statements:
 // create table ...  -> to create a new table
 // select ...		 -> to select records
@@ -519,8 +534,8 @@ func pErr(p *Parser, node *QLNode, msg string) {
 // scanner to scan thorugh range of values
 type QLScan struct {
 	Table  string // table name
-	Key1   QLNode
-	Key2   QLNode
+	Key1   *QLNode
+	Key2   *QLNode
 	Filter QLNode
 	Offset int
 	Limit  int
@@ -559,20 +574,20 @@ type QLCreateTable struct {
 
 // pStmt parsers the statement
 func pStmt(p *Parser) (r interface{}) {
-	// switch {
+	switch {
 	// case pkeyword(p, "create", "table"):
 	// 	r = pCreateTable(p)
-	// case pkeyword(p, "select"):
-	// 	r = pSelect(p)
+	case pkeyword(p, "select"):
+		r = pSelect(p)
 	// case pkeyword(p, "insert", "into"):
 	// 	r = pInsert(p)
 	// case pkeyword(p, "update"):
 	// 	r = pUpdate(p)
 	// case pkeyword(p, "delete", "from"):
 	// 	r = pDelete(p)
-	// default:
-	// 	panic(fmt.Sprintf("invalid query statement: %s", string(p.input)))
-	// }
+	default:
+		panic(fmt.Sprintf("invalid query statement: %s", string(p.input)))
+	}
 	return r
 }
 
@@ -600,16 +615,22 @@ func pIndexBy(p *Parser, node *QLScan) {
 	// parse conditiosn
 	for pkeyword(p, "and") {
 		new := QLNode{}
-		conditions = append(conditions, new)
 		pExprCmp(p, &new)
+		conditions = append(conditions, new)
 	}
 
 	if len(conditions) > 2 {
 		pErr(p, nil, "more then two conditions")
 	}
 
-	node.Key1 = conditions[0]
-	node.Key2 = conditions[1]
+	if len(conditions) == 1 {
+		node.Key1 = &conditions[0]
+		node.Key2 = nil
+		return
+	}
+
+	node.Key1 = &conditions[0]
+	node.Key2 = &conditions[1]
 }
 
 // INDEX BY ... FILTER ... LIMIT ...
@@ -668,11 +689,139 @@ func pSelectExprList(p *Parser, stmt *QLSelect) {
 func pSelectExpr(p *Parser, node *QLSelect) {
 	expr := QLNode{}
 	pExprOr(p, &expr)
-	name := ""
+	name := string(expr.Str)
 	if pkeyword(p, "as") {
 		name = pMustSym(p)
 	}
 
 	node.Name = append(node.Name, name)
 	node.Output = append(node.Output, expr)
+}
+
+// /////////////// statements execution /////////////////
+func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
+	tname := req.Table
+	tdef, err := getTableDef(tx, tname)
+	if err != nil {
+		return nil, fmt.Errorf("no table named: %s", tdef.Name)
+	}
+
+	key1node := req.Key1
+	key1col := key1node.Kids[0].Str
+
+	var valType uint32
+	for i, col := range tdef.Cols {
+		if string(key1col) == col {
+			valType = tdef.Types[i]
+		}
+	}
+
+	// determine to which index does the query should refer
+	var index int
+	for i, idx := range tdef.Indexes {
+		if string(key1col) == idx[0] {
+			index = i
+		}
+	}
+
+	if req.Key2 == nil {
+		startRec := &Record{}
+		err := addValToRecord(valType, startRec, string(key1col), key1node.Kids[1].Value)
+		if err != nil {
+			return nil, fmt.Errorf("adding start record: %w", err)
+		}
+
+		endRec := &Record{}
+		maxValue := Value{
+			I64: math.MaxInt64,
+			Str: []byte{0xff, 0xff, 0xff, 0xff},
+		}
+		minValue := Value{
+			I64: math.MinInt64 + 1,
+			Str: []byte{0x00, 0x00, 0x00, 0x00},
+		}
+
+		if key1node.Type == QL_CMP_GE || key1node.Type == QL_CMP_GT {
+			err := addValToRecord(valType, endRec, string(key1col), maxValue)
+			if err != nil {
+				return nil, fmt.Errorf("adding start record: %w", err)
+			}
+		} else if key1node.Type == QL_CMP_LE || key1node.Type == QL_CMP_LT {
+			err := addValToRecord(valType, endRec, string(key1col), minValue)
+			if err != nil {
+				return nil, fmt.Errorf("adding start record: %w", err)
+			}
+		} else if key1node.Type == QL_CMP_EQ {
+			endRec = startRec
+		}
+
+		key1inc := false
+		key2inc := false
+		if key1node.Type == QL_CMP_GE || key1node.Type == QL_CMP_LE || key1node.Type == QL_CMP_EQ {
+			key1inc = true
+		}
+		if key1node.Type == QL_CMP_EQ {
+			key2inc = true
+		}
+		sc := tx.NewScanner(*tdef, *startRec, *endRec, key1inc, key2inc, index)
+		return sc, nil
+	}
+
+	// both the conditions are given
+	key2node := req.Key2
+	key2col := key2node.Kids[0].Str
+
+	if key1node.Type == QL_CMP_GE || key1node.Type == QL_CMP_GT {
+		if key2node.Type != QL_CMP_LE && key2node.Type != QL_CMP_LT {
+			return nil, fmt.Errorf("invalid range conitions")
+		}
+	}
+
+	if key2node.Type == QL_CMP_GE || key2node.Type == QL_CMP_GT {
+		if key1node.Type != QL_CMP_LE && key1node.Type != QL_CMP_LT {
+			return nil, fmt.Errorf("invalid range conitions")
+		}
+	}
+
+	if string(key1col) != string(key2col) {
+		return nil, fmt.Errorf("index by should include conditions for the same column")
+	}
+
+	// create records
+	startRec := &Record{}
+	endRec := &Record{}
+
+	if valType == QL_STR {
+		startRec.AddStr(string(key1col), key1node.Kids[1].Str)
+		endRec.AddStr(string(key2col), key2node.Kids[1].Str)
+	} else if valType == QL_I64 {
+		startRec.AddI64(string(key1col), key1node.Kids[1].I64)
+		endRec.AddI64(string(key2col), key2node.Kids[1].I64)
+	} else {
+		return nil, fmt.Errorf("invalid column type: %d", valType)
+	}
+
+	// determine whether to include the edge keys or not
+	var key1inc bool
+	var key2inc bool
+	if key1node.Type == QL_CMP_GE || key1node.Type == QL_CMP_LE {
+		key1inc = true
+	}
+	if key2node.Type == QL_CMP_GE || key2node.Type == QL_CMP_LE {
+		key2inc = true
+	}
+
+	sc := tx.NewScanner(*tdef, *startRec, *endRec, key1inc, key2inc, index)
+	return sc, nil
+}
+
+func addValToRecord(valType uint32, rec *Record, col string, val Value) error {
+	if valType == QL_STR {
+		rec.AddStr(string(col), val.Str)
+	} else if valType == QL_I64 {
+		rec.AddI64(string(col), val.I64)
+	} else {
+		return fmt.Errorf("invalid column type: %d", valType)
+	}
+	return nil
 }

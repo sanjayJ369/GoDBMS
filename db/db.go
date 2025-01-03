@@ -358,6 +358,8 @@ func (db *DBTX) NewScanner(tdef TableDef, key1, key2 Record, key1inc, key2inc bo
 		sc.Next()
 	}
 
+	key, _ = sc.iter.Deref()
+	cmp = bytes.Compare(key, sc.key1)
 	for cmp <= 0 && !sc.key1Include {
 		sc.Next()
 		key, _ = sc.iter.Deref()
