@@ -621,6 +621,18 @@ func pMustSym(p *Parser) string {
 // condition1 AND condition2 AND condtion...
 func pIndexBy(p *Parser, node *QLScan) {
 	conditions := []QLNode{{}}
+	// only indexes are specified
+	// like: index (a, b, c)
+	if pkeyword(p, "(") {
+		pExprTuple(p, &conditions[0])
+		if !pkeyword(p, ")") {
+			pErr(p, nil, "tuple is not closed")
+		}
+		node.Key1 = &conditions[0]
+		node.Key2 = nil
+		return
+	}
+
 	pExprCmp(p, &conditions[0])
 
 	// parse conditiosn
@@ -740,10 +752,28 @@ func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
 
 	key1node := req.Key1
 
+	// index by a specific column
 	if len(key1node.Kids) == 0 && req.Key2 == nil {
-		// index by a specific column
 		key1col := key1node.Str
 		index, err := getColsIndex(tdef, string(key1col))
+		if err != nil {
+			return nil, fmt.Errorf("getting column index: %w", err)
+		}
+		return fullRangeIndexScanner(tdef, tx, index)
+	}
+
+	// index by multiple columns
+	// ex: index by (a, b)
+	if key1node.Type == QL_TUP {
+		kids := key1node.Kids
+		cols := []string{}
+		for _, kid := range kids {
+			if kid.Type != QL_SYM {
+				return nil, fmt.Errorf("invalid index by arguments, expected symbols")
+			}
+			cols = append(cols, string(kid.Str))
+		}
+		index, err := getColsIndex(tdef, cols...)
 		if err != nil {
 			return nil, fmt.Errorf("getting column index: %w", err)
 		}
@@ -890,7 +920,7 @@ func (iter *qlScanIter) Deref() (*Record, error) {
 	}
 	if res != nil {
 		iter.err = res
-		return nil, err
+		return nil, res
 	}
 	iter.err = nil
 	return rec, nil
@@ -917,6 +947,13 @@ func newQlScanFilter(req *QLScan, tx *DBTX) (*qlScanFilter, error) {
 	}
 	for filter.idx != filter.offset {
 		filter.Next()
+	}
+	// if starting tuple invalid
+	// move right until valid tuple is found
+	_, err = filter.sc.Deref()
+	for err != nil && err.Error() != "out of range" {
+		filter.sc.Next()
+		_, err = filter.sc.Deref()
 	}
 	return filter, nil
 }
@@ -945,6 +982,7 @@ func (iter *qlScanFilter) Next() {
 	iter.sc.Next()
 	_, err := iter.sc.Deref()
 	for err != nil && err.Error() != "out of range" {
+		iter.sc.Next()
 		_, err = iter.sc.Deref()
 	}
 }
@@ -1027,6 +1065,9 @@ func getColsIndex(tdef *TableDef, cols ...string) (int, error) {
 		// check if there is a column in the provided order itself
 		for i, idx := range tdef.Indexes {
 			found := true
+			if len(idx) < len(cols) {
+				break
+			}
 			for j, col := range cols {
 				if col != idx[j] {
 					found = false

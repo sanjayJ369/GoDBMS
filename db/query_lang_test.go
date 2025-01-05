@@ -601,7 +601,7 @@ func TestQLScan(t *testing.T) {
 		Cols:    []string{"id", "a", "b", "c", "data"},
 		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_BYTES},
 		Pkeys:   1,
-		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}, {"a", "b"}},
+		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}, {"a", "b"}, {"a", "b", "c"}},
 	}
 
 	database := NewDB(loc, kvstore)
@@ -761,7 +761,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b, c from demo index by a"
+		query := "select a, b, c from demo index by @a"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -783,33 +783,30 @@ func TestQLScan(t *testing.T) {
 		}
 	})
 
-	// t.Run("evaluvating select query with specifying two index by columns", func(t *testing.T) {
-	// 	tx := database.NewTX()
-	// 	database.Begin(tx)
+	t.Run("evaluvating select query with specifying two index by columns", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
 
-	// 	query := "select a, b, c from demo index by (a, b)"
-	// 	p := &Parser{
-	// 		input: []byte(query),
-	// 	}
-	// 	pkeyword(p, "select")
-	// 	res := pSelect(p)
-	// 	assert.NoError(t, p.err)
-	// 	iterator, err := newQlScanFilter(&res.QLScan, tx)
-	// 	assert.NoError(t, err)
-	// 	oldVal := int64(0)
-	// 	for iterator.Valid() {
-	// 		rec, err := iterator.Deref()
-	// 		assert.NoError(t, err)
-	// 		fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
-	// 			" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
-	// 		newVal := rec.Get("a").I64
-	// 		assert.GreaterOrEqual(t, newVal, oldVal)
-	// 		if newVal > oldVal {
-	// 			oldVal = newVal
-	// 		}
-	// 		iterator.Next()
-	// 	}
-	// })
+		query := "select a, b, c from demo index by (@a, @b, @c) filter @a > 5 and @b >= 5 and @c == 4"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		iterator, err := newQlScanFilter(&res.QLScan, tx)
+		assert.NoError(t, err)
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			assert.Greater(t, rec.Get("a").I64, int64(5))
+			assert.GreaterOrEqual(t, rec.Get("b").I64, int64(5))
+			assert.Equal(t, rec.Get("c").I64, int64(4))
+			iterator.Next()
+			// fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
+			// 	" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
+		}
+	})
 }
 
 func assertNodeValue(t testing.TB, node QLNode, val Value) {
