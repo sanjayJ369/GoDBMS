@@ -601,7 +601,7 @@ func TestQLScan(t *testing.T) {
 		Cols:    []string{"id", "a", "b", "c", "data"},
 		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_BYTES},
 		Pkeys:   1,
-		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}},
+		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}, {"a", "b"}},
 	}
 
 	database := NewDB(loc, kvstore)
@@ -688,7 +688,6 @@ func TestQLScan(t *testing.T) {
 		}
 		pkeyword(p, "select")
 		res := pSelect(p)
-		fmt.Println(res.Output)
 		assert.NoError(t, p.err)
 		sc, err := qlScanInit(&res.QLScan, tx)
 		iterator := newQlScanIter(&res.QLScan, *sc)
@@ -733,6 +732,84 @@ func TestQLScan(t *testing.T) {
 			iterator.Next()
 		}
 	})
+
+	t.Run("evaluvating select query with no index by", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b, c from demo"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		iterator, err := newQlScanFilter(&res.QLScan, tx)
+		assert.NoError(t, err)
+
+		count := 0
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			iterator.Next()
+			assert.Equal(t, rec.Get("id").I64, int64(count))
+			count++
+		}
+	})
+
+	t.Run("evaluvating select query with specifying only one index by column", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select a, b, c from demo index by a"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		assert.NoError(t, p.err)
+		iterator, err := newQlScanFilter(&res.QLScan, tx)
+		assert.NoError(t, err)
+		oldVal := int64(0)
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			newVal := rec.Get("a").I64
+			assert.GreaterOrEqual(t, newVal, oldVal)
+			if newVal > oldVal {
+				oldVal = newVal
+			}
+			iterator.Next()
+		}
+	})
+
+	// t.Run("evaluvating select query with specifying two index by columns", func(t *testing.T) {
+	// 	tx := database.NewTX()
+	// 	database.Begin(tx)
+
+	// 	query := "select a, b, c from demo index by (a, b)"
+	// 	p := &Parser{
+	// 		input: []byte(query),
+	// 	}
+	// 	pkeyword(p, "select")
+	// 	res := pSelect(p)
+	// 	assert.NoError(t, p.err)
+	// 	iterator, err := newQlScanFilter(&res.QLScan, tx)
+	// 	assert.NoError(t, err)
+	// 	oldVal := int64(0)
+	// 	for iterator.Valid() {
+	// 		rec, err := iterator.Deref()
+	// 		assert.NoError(t, err)
+	// 		fmt.Println("id: ", rec.Get("id").I64, " : ", "a: ", rec.Get("a").I64,
+	// 			" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
+	// 		newVal := rec.Get("a").I64
+	// 		assert.GreaterOrEqual(t, newVal, oldVal)
+	// 		if newVal > oldVal {
+	// 			oldVal = newVal
+	// 		}
+	// 		iterator.Next()
+	// 	}
+	// })
 }
 
 func assertNodeValue(t testing.TB, node QLNode, val Value) {

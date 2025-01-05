@@ -38,6 +38,17 @@ const (
 	QL_TUP = 40 // tuple
 )
 
+var (
+	maxValue = Value{
+		I64: math.MaxInt64,
+		Str: []byte{0xff, 0xff, 0xff, 0xff},
+	}
+	minValue = Value{
+		I64: math.MinInt64 + 1,
+		Str: []byte{0x00, 0x00, 0x00, 0x00},
+	}
+)
+
 var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%",
@@ -720,7 +731,25 @@ func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
 		return nil, fmt.Errorf("no table named: %s", tdef.Name)
 	}
 
+	if req.Key1 == nil && req.Key2 == nil {
+		// full table scan on primary index
+		// add min values to start record
+		// add max values to the end record
+		return fullRangeIndexScanner(tdef, tx, 0)
+	}
+
 	key1node := req.Key1
+
+	if len(key1node.Kids) == 0 && req.Key2 == nil {
+		// index by a specific column
+		key1col := key1node.Str
+		index, err := getColsIndex(tdef, string(key1col))
+		if err != nil {
+			return nil, fmt.Errorf("getting column index: %w", err)
+		}
+		return fullRangeIndexScanner(tdef, tx, index)
+	}
+
 	key1col := key1node.Kids[0].Str
 
 	var valType uint32
@@ -731,11 +760,9 @@ func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
 	}
 
 	// determine to which index does the query should refer
-	var index int
-	for i, idx := range tdef.Indexes {
-		if string(key1col) == idx[0] {
-			index = i
-		}
+	index, err := getColsIndex(tdef, string(key1col))
+	if err != nil {
+		return nil, fmt.Errorf("getting column index: %w", err)
 	}
 
 	if req.Key2 == nil {
@@ -746,14 +773,6 @@ func qlScanInit(req *QLScan, tx *DBTX) (*Scanner, error) {
 		}
 
 		endRec := &Record{}
-		maxValue := Value{
-			I64: math.MaxInt64,
-			Str: []byte{0xff, 0xff, 0xff, 0xff},
-		}
-		minValue := Value{
-			I64: math.MinInt64 + 1,
-			Str: []byte{0x00, 0x00, 0x00, 0x00},
-		}
 
 		if key1node.Type == QL_CMP_GE || key1node.Type == QL_CMP_GT {
 			err := addValToRecord(valType, endRec, string(key1col), maxValue)
@@ -925,8 +944,7 @@ func (iter *qlScanFilter) Next() {
 	iter.idx++
 	iter.sc.Next()
 	_, err := iter.sc.Deref()
-	for err != nil {
-		iter.Prev()
+	for err != nil && err.Error() != "out of range" {
 		_, err = iter.sc.Deref()
 	}
 }
@@ -953,6 +971,7 @@ func qlEvalRecord(rec *Record, expr QLNode) error {
 	// valid expresssion
 	return nil
 }
+
 func addValToRecord(valType uint32, rec *Record, col string, val Value) error {
 	if valType == QL_STR {
 		rec.AddStr(string(col), val.Str)
@@ -962,4 +981,78 @@ func addValToRecord(valType uint32, rec *Record, col string, val Value) error {
 		return fmt.Errorf("invalid column type: %d", valType)
 	}
 	return nil
+}
+
+func fullRangeIndexScanner(tdef *TableDef, tx *DBTX, idx int) (*Scanner, error) {
+
+	startRec := &Record{}
+	endRec := &Record{}
+
+	for _, col := range tdef.Indexes[idx] {
+		var colType uint32
+		for i, c := range tdef.Cols {
+			if col == c {
+				colType = tdef.Types[i]
+			}
+		}
+		err := addValToRecord(colType, startRec, col, minValue)
+		if err != nil {
+			return nil, fmt.Errorf("adding start record: %w", err)
+		}
+		err = addValToRecord(colType, endRec, col, maxValue)
+		if err != nil {
+			return nil, fmt.Errorf("adding end record: %w", err)
+		}
+	}
+	sc := tx.NewScanner(*tdef, *startRec, *endRec, false, false, idx)
+	return sc, nil
+}
+
+func getColsIndex(tdef *TableDef, cols ...string) (int, error) {
+	// determine to which index does the query should refer
+
+	if len(cols) == 0 {
+		return -1, fmt.Errorf("no columns provided")
+	}
+
+	if len(cols) == 1 {
+		for i, idx := range tdef.Indexes {
+			if cols[0] == idx[0] {
+				return i, nil
+			}
+		}
+		return -1, fmt.Errorf("there are no columsn having index: %v", cols[0])
+	} else {
+		// multiple cols are given (a, b, c)
+		// check if there is a column in the provided order itself
+		for i, idx := range tdef.Indexes {
+			found := true
+			for j, col := range cols {
+				if col != idx[j] {
+					found = false
+					break
+				}
+			}
+			if found {
+				return i, nil
+			}
+		}
+
+		// atleast try to find a index which contains all the required
+		// colums
+		for i, idx := range tdef.Indexes {
+			count := 0
+			for _, col := range cols {
+				for _, k := range idx {
+					if col == k {
+						count++
+					}
+				}
+			}
+			if count == len(cols) {
+				return i, nil
+			}
+		}
+		return -1, fmt.Errorf("there are no columsn having indexes: %v", cols)
+	}
 }
