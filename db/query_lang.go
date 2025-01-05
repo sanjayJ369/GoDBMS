@@ -916,7 +916,7 @@ func (iter *qlScanIter) Deref() (*Record, error) {
 	var res error
 	res = nil
 	if iter.req.Filter != nil {
-		res = qlEvalRecord(rec, *iter.req.Filter)
+		res = qlEvalRecordBool(rec, *iter.req.Filter)
 	}
 	if res != nil {
 		iter.err = res
@@ -924,6 +924,42 @@ func (iter *qlScanIter) Deref() (*Record, error) {
 	}
 	iter.err = nil
 	return rec, nil
+}
+
+type qlScanSelect struct {
+	iter *qlScanFilter
+	sel  *QLSelect
+}
+
+func NewqlScanSelect(sel *QLSelect, tx *DBTX) (*qlScanSelect, error) {
+	iterator, err := newQlScanFilter(&sel.QLScan, tx)
+	if err != nil {
+		return nil, fmt.Errorf("creating scan filter: %w", err)
+	}
+	return &qlScanSelect{
+		iter: iterator,
+		sel:  sel,
+	}, nil
+}
+
+func (sc *qlScanSelect) Next() {
+	sc.iter.Next()
+}
+
+func (sc *qlScanSelect) Prev() {
+	sc.iter.Prev()
+}
+
+func (sc *qlScanSelect) Valid() bool {
+	return sc.iter.Valid()
+}
+
+func (sc *qlScanSelect) Deref() (*Record, error) {
+	rec, err := sc.iter.Deref()
+	if err != nil {
+		return nil, err
+	}
+	return qlEvalOutput(&rec, sc.sel.Output, sc.sel.Name)
 }
 
 type qlScanFilter struct {
@@ -992,7 +1028,30 @@ func (iter *qlScanFilter) Deref() (Record, error) {
 	return iter.sc.rec, iter.sc.err
 }
 
-func qlEvalRecord(rec *Record, expr QLNode) error {
+func qlEvalOutput(rec *Record, exprs []QLNode, names []string) (*Record, error) {
+	out := &Record{}
+	for i, expr := range exprs {
+		ctx := QLEvalContext{
+			env: *rec,
+		}
+		qlEval(&ctx, expr)
+		if ctx.err != nil {
+			return nil, ctx.err
+		}
+
+		switch ctx.out.Type {
+		case QL_BOOL, QL_I64:
+			out.AddI64(names[i], ctx.out.I64)
+		case QL_STR:
+			out.AddStr(names[i], ctx.out.Str)
+		default:
+			return nil, fmt.Errorf("invalid expression output type: %d", ctx.out.Type)
+		}
+	}
+	return out, nil
+}
+
+func qlEvalRecordBool(rec *Record, expr QLNode) error {
 	ctx := QLEvalContext{
 		env: *rec,
 	}

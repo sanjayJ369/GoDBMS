@@ -807,6 +807,34 @@ func TestQLScan(t *testing.T) {
 			// 	" : ", "b: ", rec.Get("b").I64, " : ", "c: ", rec.Get("c").I64)
 		}
 	})
+
+	t.Run("evaluating select query with specified output columns", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select (@a + @b)  as APB, (@b - @c) as BMC from demo"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		iterator, err := NewqlScanSelect(res, tx)
+		assert.NoError(t, err)
+
+		for iterator.Valid() {
+			selRec, err := iterator.Deref()
+			assert.NoError(t, err)
+			rec, err := iterator.iter.Deref()
+			assert.NoError(t, err)
+			apb := selRec.Get("APB").I64
+			bmc := selRec.Get("BMC").I64
+			fmt.Printf("APB: %d, BMC: %d, a: %d, b: %d, c: %d\n", apb, bmc, rec.Get("a").I64, rec.Get("b").I64, rec.Get("c").I64)
+			assert.Equal(t, apb, rec.Get("a").I64+rec.Get("b").I64)
+			assert.Equal(t, bmc, rec.Get("b").I64-rec.Get("c").I64)
+			iterator.Next()
+		}
+	})
+
 }
 
 func assertNodeValue(t testing.TB, node QLNode, val Value) {
