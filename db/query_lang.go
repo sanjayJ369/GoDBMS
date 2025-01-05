@@ -51,8 +51,8 @@ var (
 
 var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "filter", "into", "delete", "from", "update", ",",
-	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%",
-	">=", "<=", "==", ">", "<", "offset", "limit"}
+	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%", ";",
+	">=", "<=", "==", ">", "<", "offset", "limit", "primary", "key"}
 
 // isValidKeyword reports if input is a valid symbol(keyword)
 func isValidKeyword(s string) bool {
@@ -304,9 +304,19 @@ func qlErr(ctx *QLEvalContext, args ...interface{}) {
 ///////////////// expression tree parsing /////////////////
 
 func (p *Parser) skipSpace() {
-	for p.idx < len(p.input) && p.input[p.idx] == byte(32) {
+	for p.idx < len(p.input) && unicode.IsSpace(rune(p.input[p.idx])) {
 		p.idx++
 	}
+}
+
+func getNextToken(p *Parser) string {
+	p.skipSpace()
+	start := p.idx
+	end := start
+	for end < len(p.input) && (isStr(p.input[end]) || isNum(p.input[end])) {
+		end++
+	}
+	return string(p.input[start:end])
 }
 
 // pkeyword reports if the key words are valid
@@ -583,11 +593,15 @@ type QLCreateTable struct {
 	Def TableDef
 }
 
+func qlCreateTable(req *QLCreateTable, tx *DBTX) error {
+	return tx.TableNew(&req.Def)
+}
+
 // pStmt parsers the statement
 func pStmt(p *Parser) (r interface{}) {
 	switch {
-	// case pkeyword(p, "create", "table"):
-	// 	r = pCreateTable(p)
+	case pkeyword(p, "create", "table"):
+		r = pCreateTable(p)
 	case pkeyword(p, "select"):
 		r = pSelect(p)
 	// case pkeyword(p, "insert", "into"):
@@ -692,6 +706,117 @@ func pOffset(p *Parser, node *QLScan) {
 		pErr(p, &res, "expected number after offset")
 	}
 	node.Offset = int(res.I64)
+}
+
+func pCreateTable(p *Parser) *QLCreateTable {
+	tdef := &TableDef{}
+	n := QLNode{}
+	pStr(p, &n)
+	tdef.Name = string(n.Str)
+	if !pkeyword(p, "(") {
+		pErr(p, nil, "invalid create table syntax")
+		return nil
+	}
+
+	// parse table attributes
+	cols := [][]string{}
+	indexes := [][]string{}
+	pks := []string{}
+
+	nexttkn := getNextToken(p)
+	for nexttkn != "index" && nexttkn != "primary" {
+		nameNode := QLNode{}
+		typeNode := QLNode{}
+
+		pStr(p, &nameNode)
+		pStr(p, &typeNode)
+
+		col := []string{string(nameNode.Str), string(typeNode.Str)}
+		cols = append(cols, col)
+		if !pkeyword(p, ",") {
+			pErr(p, nil, "invalid create table syntax")
+		}
+		nexttkn = getNextToken(p)
+	}
+
+	// parse indexes
+	for nexttkn != "primary" {
+		pkeyword(p, "index")
+		idx := &QLNode{}
+		if !pkeyword(p, "(") {
+			pErr(p, nil, "invalid create table syntax (declaring index)")
+		}
+		pExprTuple(p, idx)
+		if !pkeyword(p, ")") {
+			pErr(p, nil, "invalid create table syntax (declaring index)")
+		}
+		if !pkeyword(p, ",") {
+			pErr(p, nil, "invalid create table syntax (declaring index)")
+		}
+
+		i := []string{}
+		if len(idx.Kids) == 0 {
+			i = append(i, string(idx.Str))
+		} else {
+			for _, kid := range idx.Kids {
+				i = append(i, string(kid.Str))
+			}
+		}
+		indexes = append(indexes, i)
+		nexttkn = getNextToken(p)
+	}
+
+	// parse primary keys
+	if !pkeyword(p, "primary", "key") {
+		pErr(p, nil, "invalid syntax, primary keys declaration")
+	}
+	idx := &QLNode{}
+	if !pkeyword(p, "(") {
+		pErr(p, nil, "no primary key")
+	}
+	pExprTuple(p, idx)
+	if !pkeyword(p, ")") {
+		pErr(p, nil, "invalid create table syntax")
+	}
+	if !pkeyword(p, ")") {
+		pErr(p, nil, "invalid create table syntax")
+	}
+	if !pkeyword(p, ";") {
+		pErr(p, nil, "invalid create table syntax")
+	}
+	if len(idx.Kids) == 0 {
+		pks = append(pks, string(idx.Str))
+	} else {
+		for _, kid := range idx.Kids {
+			pks = append(pks, string(kid.Str))
+		}
+	}
+
+	// construct tdef from cols, indexes, and pks
+	tdef.Pkeys = len(pks)
+
+	for _, col := range cols {
+		name := col[0]
+		var colType uint32
+		switch col[1] {
+		case "int":
+			colType = TYPE_INT64
+		case "bytes":
+			colType = TYPE_BYTES
+		default:
+			pErr(p, nil, "invalid type")
+		}
+
+		tdef.Cols = append(tdef.Cols, name)
+		tdef.Types = append(tdef.Types, colType)
+	}
+
+	tdef.Indexes = append(tdef.Indexes, pks)
+	tdef.Indexes = append(tdef.Indexes, indexes...)
+
+	return &QLCreateTable{
+		Def: *tdef,
+	}
 }
 
 func pSelect(p *Parser) *QLSelect {
@@ -931,7 +1056,7 @@ type qlScanSelect struct {
 	sel  *QLSelect
 }
 
-func NewqlScanSelect(sel *QLSelect, tx *DBTX) (*qlScanSelect, error) {
+func qlSelect(sel *QLSelect, tx *DBTX) (*qlScanSelect, error) {
 	iterator, err := newQlScanFilter(&sel.QLScan, tx)
 	if err != nil {
 		return nil, fmt.Errorf("creating scan filter: %w", err)
