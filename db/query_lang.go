@@ -870,6 +870,45 @@ func qlInsert(req *QLInsert, tx *DBTX) error {
 	return tx.Insert(req.Table, rec)
 }
 
+func pDelete(p *Parser) *QLDelete {
+	stmt := QLDelete{}
+
+	// FROM table_name
+	if !pkeyword(p, "from") {
+		pErr(p, nil, "exprected `from` table")
+	}
+	stmt.Table = pMustSym(p)
+
+	// INDEX BY ... FILTER ... LIMIT ...
+	pScan(p, &stmt.QLScan)
+	if p.err != nil {
+		return nil
+	}
+	return &stmt
+}
+
+func qlDelete(req *QLDelete, tx *DBTX) (int, error) {
+	// scan though the records and delete
+	iterator, err := newQlScanFilter(&req.QLScan, tx)
+	if err != nil {
+		return 0, fmt.Errorf("getting scanner: %w", err)
+	}
+	count := 0
+	for iterator.Valid() {
+		rec, err := iterator.Deref()
+		if err != nil {
+			return count, fmt.Errorf("getting record: %w", err)
+		}
+		ok := tx.Delete(req.Table, rec)
+		if !ok {
+			return count, fmt.Errorf("unable to delete record: %v", rec)
+		}
+		iterator.Next()
+		count++
+	}
+	return count, nil
+}
+
 func pSelect(p *Parser) *QLSelect {
 	stmt := QLSelect{}
 	// select statement structure

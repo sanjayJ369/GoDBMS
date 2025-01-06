@@ -43,6 +43,7 @@ type Iterator interface {
 }
 
 type CombinedIterator struct {
+	kvtx  *KVTX
 	store Iterator // iteratoes through the commit values
 	tx    Iterator // iteratoes though the newly inserted value (not yet commited)
 }
@@ -94,6 +95,13 @@ func (c *CombinedIterator) Prev() {
 func (c *CombinedIterator) Deref() ([]byte, []byte) {
 	k1, _ := c.store.Deref()
 	k2, _ := c.tx.Deref()
+
+	if c.kvtx.delSet.Has(k1) {
+		k1 = nil
+	}
+	if c.kvtx.delSet.Has(k2) {
+		k2 = nil
+	}
 	// of one of the tree is empty return other key
 	if k1 == nil {
 		return c.tx.Deref()
@@ -430,6 +438,7 @@ func (k *KV) Close() {
 
 func (k *KVTX) Seek(key []byte) Iterator {
 	iter := &CombinedIterator{
+		kvtx:  k,
 		store: k.snapshot.SeekLE(key),
 		tx:    k.pending.SeekLE(key),
 	}

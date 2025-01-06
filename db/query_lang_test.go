@@ -587,19 +587,20 @@ func TestPScanFuncs(t *testing.T) {
 	})
 }
 
+var tdef = &TableDef{
+	Name:    "demo",
+	Cols:    []string{"id", "a", "b", "c", "data"},
+	Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+	Pkeys:   1,
+	Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}, {"a", "b"}, {"a", "b", "c"}},
+}
+
 func TestQLScan(t *testing.T) {
 
 	database, clear := createTempDB()
 	defer clear()
-	var tdef = &TableDef{
-		Name:    "demo",
-		Cols:    []string{"id", "a", "b", "c", "data"},
-		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_INT64, TYPE_BYTES},
-		Pkeys:   1,
-		Indexes: [][]string{{"id"}, {"a"}, {"b"}, {"c"}, {"a", "b"}, {"a", "b", "c"}},
-	}
 
-	_ = insertRecords(t, tdef, database)
+	_ = insertRecords(t, database)
 
 	t.Run("evaluvating select query", func(t *testing.T) {
 		tx := database.NewTX()
@@ -1006,6 +1007,70 @@ func TestInsertRecord(t *testing.T) {
 	})
 }
 
+func TestDeleteRecords(t *testing.T) {
+	database, clear := createTempDB()
+	defer clear()
+	_ = insertRecords(t, database)
+
+	t.Run("delete query deletes all records that match the condition", func(t *testing.T) {
+		// Parsing select query to get the records to be deleted
+		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6"
+		selParser := &Parser{
+			input: []byte(selQuery),
+		}
+		pkeyword(selParser, "select")
+		selRes := pSelect(selParser)
+		assert.NoError(t, selParser.err)
+
+		tx := database.NewTX()
+		database.Begin(tx)
+		iterator, err := newQlScanFilter(&selRes.QLScan, tx)
+		assert.NoError(t, err)
+
+		records := []Record{}
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			records = append(records, rec)
+			iterator.Next()
+		}
+
+		// Deleting records
+		delQuery := "delete from demo index by a filter @a > 3 and @a < 6"
+		delParser := &Parser{
+			input: []byte(delQuery),
+		}
+		pkeyword(delParser, "delete")
+		delRes := pDelete(delParser)
+		assert.NoError(t, delParser.err)
+
+		count, err := qlDelete(delRes, tx)
+		assert.NoError(t, err)
+		assert.Equal(t, count, len(records))
+
+		// Verifying deletion
+		selParser = &Parser{
+			input: []byte(selQuery),
+		}
+		pkeyword(selParser, "select")
+		selRes = pSelect(selParser)
+		assert.NoError(t, selParser.err)
+
+		iterator, err = newQlScanFilter(&selRes.QLScan, tx)
+		assert.NoError(t, err)
+
+		newRecords := []Record{}
+		for iterator.Valid() {
+			rec, err := iterator.Deref()
+			assert.NoError(t, err)
+			newRecords = append(newRecords, rec)
+			iterator.Next()
+		}
+
+		assert.Empty(t, newRecords, "Expected no records to be found after deletion")
+	})
+}
+
 func assertNodeValue(t testing.TB, node QLNode, val Value) {
 	switch node.Type {
 	case QL_STR | QL_SYM:
@@ -1025,7 +1090,7 @@ func createTempDB() (*DB, func()) {
 	return database, kvstore.Close
 }
 
-func insertRecords(t testing.TB, tdef *TableDef, database *DB) []Record {
+func insertRecords(t testing.TB, database *DB) []Record {
 	t.Helper()
 	tx := database.NewTX()
 	// begin transaction
