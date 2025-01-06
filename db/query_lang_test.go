@@ -589,8 +589,8 @@ func TestPScanFuncs(t *testing.T) {
 
 func TestQLScan(t *testing.T) {
 
-	database := createTempDB()
-
+	database, clear := createTempDB()
+	defer clear()
 	var tdef = &TableDef{
 		Name:    "demo",
 		Cols:    []string{"id", "a", "b", "c", "data"},
@@ -827,6 +827,29 @@ func TestQLScan(t *testing.T) {
 			iterator.Next()
 		}
 	})
+
+	t.Run("evaluating select * query", func(t *testing.T) {
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		query := "select * from demo"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "select")
+		res := pSelect(p)
+		iterator, err := qlSelect(res, tx)
+		assert.NoError(t, err)
+		count := 0
+		for iterator.Valid() {
+			res, err := iterator.Deref()
+			assert.NoError(t, err)
+			assert.Equal(t, count, int(res.Get("id").I64))
+			// fmt.Printf("id: %d, a: %d, b: %d, c: %d\n", rec.Get("id").I64, rec.Get("a").I64, rec.Get("b").I64, rec.Get("c").I64)
+			iterator.Next()
+			count++
+		}
+	})
 }
 
 func TestCreateTable(t *testing.T) {
@@ -888,7 +911,8 @@ func TestCreateTable(t *testing.T) {
 		}
 
 		// creating db instance
-		db := createTempDB()
+		db, clear := createTempDB()
+		defer clear()
 		tx := db.NewTX()
 		db.Begin(tx)
 		pkeyword(&p, "create", "table")
@@ -906,6 +930,82 @@ func TestCreateTable(t *testing.T) {
 	})
 }
 
+func TestInsertRecord(t *testing.T) {
+	// create new temp DB and insert table defination
+	tdef := &TableDef{
+		Name:    "demo",
+		Cols:    []string{"id", "a", "b"},
+		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+		Pkeys:   1,
+		Indexes: [][]string{{"id"}, {"a"}, {"b"}},
+	}
+
+	// creating db instance
+	db, clear := createTempDB()
+	defer clear()
+	tx := db.NewTX()
+	db.Begin(tx)
+	err := tx.TableNew(tdef)
+	assert.NoError(t, err)
+
+	t.Run("inserting a new record", func(t *testing.T) {
+		query := "insert into demo (id, a, b) values (1, 10, abcd);"
+		wantNames := []string{"id", "a", "b"}
+		wantVals := []Value{
+			{
+				Type: TYPE_INT64,
+				I64:  1,
+			},
+			{
+				Type: TYPE_INT64,
+				I64:  10,
+			},
+			{
+				Type: TYPE_BYTES,
+				Str:  []byte("abcd"),
+			},
+		}
+		p := &Parser{
+			input: []byte(query),
+		}
+		res := pInsert(p)
+		for i, name := range res.Name {
+			assert.Equal(t, wantNames[i], name)
+		}
+		for i, val := range res.Values {
+			assert.Equal(t, wantVals[i].Type, val.Type)
+			switch wantVals[i].Type {
+			case TYPE_BYTES:
+				assert.Equal(t, wantVals[i].Str, val.Str)
+			case TYPE_INT64:
+				assert.Equal(t, wantVals[i].I64, val.I64)
+			default:
+				t.Errorf("invalid node type: %d", val.Type)
+			}
+		}
+	})
+
+	t.Run("inserting records into the table", func(t *testing.T) {
+		query := "insert into demo (id, a, b) values (1, 10, abcd);"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "insert", "into")
+		res := pInsert(p)
+		assert.NoError(t, p.err)
+		err := qlInsert(res, tx)
+		assert.NoError(t, err)
+
+		got := Record{}
+		got.AddI64("id", 1)
+		_, err = tx.Get("demo", &got)
+		assert.NoError(t, err)
+
+		assert.Equal(t, int64(10), got.Get("a").I64)
+		assert.Equal(t, "abcd", string(got.Get("b").Str))
+	})
+}
+
 func assertNodeValue(t testing.TB, node QLNode, val Value) {
 	switch node.Type {
 	case QL_STR | QL_SYM:
@@ -915,15 +1015,14 @@ func assertNodeValue(t testing.TB, node QLNode, val Value) {
 	}
 }
 
-func createTempDB() *DB {
+func createTempDB() (*DB, func()) {
 	loc := util.NewTempFileLoc()
 	kvstore, err := kv.NewKv(loc)
 	if err != nil {
 		log.Fatalf("creating kvstore: %s", err.Error())
 	}
-	defer kvstore.Close()
 	database := NewDB(loc, kvstore)
-	return database
+	return database, kvstore.Close
 }
 
 func insertRecords(t testing.TB, tdef *TableDef, database *DB) []Record {

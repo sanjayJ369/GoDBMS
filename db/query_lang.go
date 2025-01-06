@@ -52,7 +52,8 @@ var (
 var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%", ";",
-	">=", "<=", "==", ">", "<", "offset", "limit", "primary", "key"}
+	">=", "<=", "==", ">", "<", "offset", "limit", "primary", "key",
+	"values"}
 
 // isValidKeyword reports if input is a valid symbol(keyword)
 func isValidKeyword(s string) bool {
@@ -312,7 +313,7 @@ func (p *Parser) skipSpace() {
 func getNextToken(p *Parser) string {
 	p.skipSpace()
 	start := p.idx
-	end := start
+	end := start + 1
 	for end < len(p.input) && (isStr(p.input[end]) || isNum(p.input[end])) {
 		end++
 	}
@@ -580,7 +581,7 @@ type QLUpdate struct {
 type QLInsert struct {
 	Table  string
 	Name   []string
-	Values [][]QLNode
+	Values []QLNode
 }
 
 // delete tuples from table
@@ -819,13 +820,68 @@ func pCreateTable(p *Parser) *QLCreateTable {
 	}
 }
 
+func pInsert(p *Parser) *QLInsert {
+	stmt := QLInsert{}
+	// get table name
+	stmt.Table = pMustSym(p)
+	if !pkeyword(p, "(") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+	colNames := &QLNode{}
+	pExprTuple(p, colNames)
+	if !pkeyword(p, ")") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+	if !pkeyword(p, "values") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+	if !pkeyword(p, "(") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+	vals := &QLNode{}
+	pExprTuple(p, vals)
+	if !pkeyword(p, ")") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+	if !pkeyword(p, ";") {
+		pErr(p, nil, "invalid insert query syntax")
+	}
+
+	for _, name := range colNames.Kids {
+		stmt.Name = append(stmt.Name, string(name.Str))
+	}
+	stmt.Values = append(stmt.Values, vals.Kids...)
+	return &stmt
+}
+
+func qlInsert(req *QLInsert, tx *DBTX) error {
+	rec := Record{}
+	// populate record with values
+	for i, val := range req.Values {
+		switch val.Type {
+		case TYPE_BYTES:
+			rec.AddStr(req.Name[i], val.Str)
+		case TYPE_INT64:
+			rec.AddI64(req.Name[i], val.I64)
+		default:
+			return fmt.Errorf("invalid type: %d", val.Type)
+		}
+	}
+	return tx.Insert(req.Table, rec)
+}
+
 func pSelect(p *Parser) *QLSelect {
 	stmt := QLSelect{}
 	// select statement structure
 	// SELECT ... FROM table_name INDEX BY ... FILTER ... LIMIT ...
 
-	// SELECT ...
-	pSelectExprList(p, &stmt)
+	if pkeyword(p, "*") {
+		// select *
+		stmt.Name = append(stmt.Name, "*")
+	} else {
+		// SELECT ...
+		pSelectExprList(p, &stmt)
+	}
 
 	// FROM table_name
 	if !pkeyword(p, "from") {
@@ -1154,6 +1210,9 @@ func (iter *qlScanFilter) Deref() (Record, error) {
 }
 
 func qlEvalOutput(rec *Record, exprs []QLNode, names []string) (*Record, error) {
+	if names[0] == "*" {
+		return rec, nil
+	}
 	out := &Record{}
 	for i, expr := range exprs {
 		ctx := QLEvalContext{
