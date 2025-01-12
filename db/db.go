@@ -149,6 +149,7 @@ func (sc *Scanner) Valid() bool {
 
 	// compare current key with range
 	key, _ := sc.iter.Deref()
+
 	cmp := bytes.Compare(key, sc.key1)
 	if cmp == 0 && !sc.key1Include {
 		return false
@@ -486,22 +487,17 @@ func (db *DBTX) Update(table string, rec Record) bool {
 		return false
 	}
 
-	// if the value exists update the primary index
-	dbSet(db, tdef, rec)
-
-	// delete old seconday indexes
-	keys := getSecondaryIndexesKeys(tdef, *getRec)
-	for _, key := range keys {
-		ok := db.kv.Del(key)
-		if !ok {
-			return false
-		}
+	// if the value already exists delete the value
+	ok = dbDel(db, tdef, *getRec)
+	if !ok {
+		return false
 	}
 
-	// insert new seconday indexex
-	keys = getSecondaryIndexesKeys(tdef, rec)
-	for _, key := range keys {
-		db.kv.Set(key, []byte{})
+	// if the value exists update the primary index
+	err = dbSet(db, tdef, rec)
+	if err != nil {
+		fmt.Printf("updating the record: %s", err)
+		return false
 	}
 
 	return true
@@ -551,7 +547,7 @@ func dbDel(db *DBTX, tdef *TableDef, rec Record) bool {
 
 	// encode the primary keys and table prefix to get the key
 	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
-	ok, err := dbGet(db, tdef, &rec)
+	ok, _ := dbGet(db, tdef, &rec)
 	if !ok {
 		return false
 	}
