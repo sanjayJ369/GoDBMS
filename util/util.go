@@ -21,26 +21,26 @@ func (s *Set) getHash(key []byte) []byte {
 }
 
 func (s *Set) Has(key []byte) bool {
-	key = s.getHash(key)
-	_, ok := s.store[string(key)]
+	hashedkey := s.getHash(key)
+	_, ok := s.store[string(hashedkey)]
 	return ok
 }
 
 func (s *Set) Set(key []byte) bool {
-	key = s.getHash(key)
 	if s.Has(key) {
 		return false
 	}
-	s.store[string(key)] = true
+	hashedkey := s.getHash(key)
+	s.store[string(hashedkey)] = true
 	return true
 }
 
 func (s *Set) Del(key []byte) bool {
-	key = s.getHash(key)
 	if !s.Has(key) {
 		return false
 	}
-	delete(s.store, string(key))
+	hashedkey := s.getHash(key)
+	delete(s.store, string(hashedkey))
 	return true
 }
 
