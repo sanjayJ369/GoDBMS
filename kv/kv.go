@@ -55,16 +55,29 @@ func (c *CombinedIterator) Next() {
 
 	if k1 == nil {
 		c.tx.Next()
-		return
 	} else if k2 == nil {
 		c.store.Next()
-		return
+	} else {
+		if cmp < 0 || !c.tx.Valid() {
+			c.store.Next()
+		} else if cmp == 0 {
+			c.store.Next()
+			c.tx.Next()
+		} else {
+			c.tx.Next()
+		}
 	}
 
-	if cmp <= 0 || !c.tx.Valid() {
+	k1, _ = c.store.Deref()
+	for c.kvtx.delSet.Has(k1) {
 		c.store.Next()
-	} else {
+		k1, _ = c.store.Deref()
+	}
+
+	k2, _ = c.tx.Deref()
+	for c.kvtx.delSet.Has(k2) {
 		c.tx.Next()
+		k2, _ = c.tx.Deref()
 	}
 }
 
@@ -89,6 +102,19 @@ func (c *CombinedIterator) Prev() {
 		c.tx.Next()
 	} else {
 		c.store.Next()
+	}
+
+	// skip deleted keys
+	k1, _ = c.store.Deref()
+	for c.kvtx.delSet.Has(k1) {
+		c.store.Prev()
+		k1, _ = c.store.Deref()
+	}
+
+	k2, _ = c.tx.Deref()
+	for c.kvtx.delSet.Has(k2) {
+		c.tx.Prev()
+		k2, _ = c.tx.Deref()
 	}
 }
 
@@ -442,6 +468,18 @@ func (k *KVTX) Seek(key []byte) Iterator {
 		store: k.snapshot.SeekLE(key),
 		tx:    k.pending.SeekLE(key),
 	}
+
+	k1, _ := iter.store.Deref()
+	for iter.kvtx.delSet.Has(k1) {
+		iter.store.Next()
+		k1, _ = iter.store.Deref()
+	}
+
+	k2, _ := iter.tx.Deref()
+	for iter.kvtx.delSet.Has(k2) {
+		iter.tx.Next()
+		k2, _ = iter.tx.Deref()
+	}
 	return iter
 }
 
@@ -461,8 +499,8 @@ func (k *KVTX) Get(key []byte) ([]byte, error) {
 
 func (k *KVTX) Set(key []byte, val []byte) {
 	if k.delSet.Has(key) {
-		log.Println("setting deleted key")
-		return
+		k.delSet.Del(key)
+		delete(k.deletes, string(key))
 	}
 	k.writeSet.Set(key)
 	k.writes[string(key)] = true
@@ -477,6 +515,7 @@ func (k *KVTX) Del(key []byte) bool {
 	k.delSet.Set(key)
 	k.deletes[string(key)] = true
 	if k.writeSet.Has(key) {
+		k.writeSet.Del(key)
 		return k.pending.Delete(key)
 	}
 	return true

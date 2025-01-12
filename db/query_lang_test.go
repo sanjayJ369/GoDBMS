@@ -1071,6 +1071,56 @@ func TestDeleteRecords(t *testing.T) {
 	})
 }
 
+func TestUpdateRecords(t *testing.T) {
+	database, clear := createTempDB()
+	defer clear()
+	_ = insertRecords(t, database)
+
+	t.Run("update query updates all records that match the condition", func(t *testing.T) {
+		// Parsing select query to get the records to be updated
+		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6"
+		tx := database.NewTX()
+		database.Begin(tx)
+
+		records := getSelectQueryResults(t, tx, selQuery)
+
+		// Print records before update
+		fmt.Println("Records before update:")
+		for _, rec := range records {
+			fmt.Printf("id: %d, a: %d, b: %d, c: %d\n", rec.Get("id").I64, rec.Get("a").I64, rec.Get("b").I64, rec.Get("c").I64)
+		}
+
+		// updating records
+		updateQuery := "update demo set @b = @c + @a index by a filter @a > 3 and @a < 6"
+		updateParser := &Parser{
+			input: []byte(updateQuery),
+		}
+		pkeyword(updateParser, "update")
+		upRes := pUpdate(updateParser)
+		assert.NoError(t, updateParser.err)
+
+		err := qlUpdate(upRes, tx)
+		assert.NoError(t, err)
+
+		newRecords := getSelectQueryResults(t, tx, selQuery)
+
+		// Print records after update
+		fmt.Println("Records after update:")
+		for _, rec := range newRecords {
+			fmt.Printf("id: %d, a: %d, b: %d, c: %d\n", rec.Get("id").I64, rec.Get("a").I64, rec.Get("b").I64, rec.Get("c").I64)
+		}
+
+		// Compare old and new records
+		for i, rec := range records {
+			newRec := newRecords[i]
+			assert.Equal(t, rec.Get("id").I64, newRec.Get("id").I64)
+			assert.Equal(t, rec.Get("a").I64, newRec.Get("a").I64)
+			assert.Equal(t, rec.Get("c").I64, newRec.Get("c").I64)
+			assert.Equal(t, rec.Get("a").I64+rec.Get("c").I64, newRec.Get("b").I64)
+		}
+	})
+}
+
 func assertNodeValue(t testing.TB, node QLNode, val Value) {
 	switch node.Type {
 	case QL_STR | QL_SYM:
@@ -1128,5 +1178,27 @@ func insertRecords(t testing.TB, database *DB) []Record {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return records
+}
+
+func getSelectQueryResults(t testing.TB, tx *DBTX, query string) []Record {
+	selParser := &Parser{
+		input: []byte(query),
+	}
+	pkeyword(selParser, "select")
+	selRes := pSelect(selParser)
+	assert.NoError(t, selParser.err)
+
+	iterator, err := newQlScanFilter(&selRes.QLScan, tx)
+	assert.NoError(t, err)
+
+	records := []Record{}
+	for iterator.Valid() {
+		rec, err := iterator.Deref()
+		assert.NoError(t, err)
+		records = append(records, rec)
+		iterator.Next()
+	}
+
 	return records
 }

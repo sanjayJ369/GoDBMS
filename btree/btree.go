@@ -82,7 +82,7 @@ func (i *BIter) StartNode() bool {
 
 // return current key value pair
 func (i *BIter) Deref() ([]byte, []byte) {
-	if i.tree.Root == 0 {
+	if i.tree.Root == 0 || len(i.path) == 0 {
 		return nil, nil
 	}
 	node := i.path[len(i.pos)-1]

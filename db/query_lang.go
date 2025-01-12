@@ -52,8 +52,8 @@ var (
 var KeyWords = []string{"create", "table", "select", "index", "by",
 	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%", ";",
-	">=", "<=", "==", ">", "<", "offset", "limit", "primary", "key",
-	"values"}
+	">=", "<=", "==", "=", ">", "<", "offset", "limit", "primary", "key",
+	"values", "set"}
 
 // isValidKeyword reports if input is a valid symbol(keyword)
 func isValidKeyword(s string) bool {
@@ -605,12 +605,12 @@ func pStmt(p *Parser) (r interface{}) {
 		r = pCreateTable(p)
 	case pkeyword(p, "select"):
 		r = pSelect(p)
-	// case pkeyword(p, "insert", "into"):
-	// 	r = pInsert(p)
+	case pkeyword(p, "insert", "into"):
+		r = pInsert(p)
 	// case pkeyword(p, "update"):
 	// 	r = pUpdate(p)
-	// case pkeyword(p, "delete", "from"):
-	// 	r = pDelete(p)
+	case pkeyword(p, "delete"):
+		r = pDelete(p)
 	default:
 		panic(fmt.Sprintf("invalid query statement: %s", string(p.input)))
 	}
@@ -907,6 +907,97 @@ func qlDelete(req *QLDelete, tx *DBTX) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func pUpdate(p *Parser) *QLUpdate {
+	// update tablename set a = expr, b = expr .... conditions;
+	stmt := QLUpdate{}
+	stmt.Table = pMustSym(p)
+	if !pkeyword(p, "set") {
+		pErr(p, nil, "invalid update query syntax expected 'set' ")
+	}
+	// a = ..., b = ..., c = ...
+	pUpdateExprList(p, &stmt)
+
+	// INDEX BY ... FILTER ... LIMIT ...
+	pScan(p, &stmt.QLScan)
+	if p.err != nil {
+		return nil
+	}
+	return &stmt
+}
+
+func pUpdateExprList(p *Parser, stmt *QLUpdate) {
+	pUpdateExpr(p, stmt)
+	for pkeyword(p, ",") {
+		pUpdateExpr(p, stmt)
+	}
+}
+
+func pUpdateExpr(p *Parser, stmt *QLUpdate) {
+	col := &QLNode{}
+	pSym(p, col)
+	stmt.Name = append(stmt.Name, string(col.Str))
+	if !pkeyword(p, "=") {
+		pErr(p, nil, "invalid update query syntax expected '=' ")
+	}
+	expr := &QLNode{}
+	pExprOr(p, expr)
+	stmt.Values = append(stmt.Values, *expr)
+}
+
+func qlUpdate(req *QLUpdate, tx *DBTX) error {
+	iterator, err := newQlScanFilter(&req.QLScan, tx)
+	if err != nil {
+		return fmt.Errorf("getting scanner: %w", err)
+	}
+
+	// add colums that are not updated
+	tdef, err := getTableDef(tx, req.Table)
+	if err != nil {
+		return fmt.Errorf("getting table defination: %w", err)
+	}
+	for _, col := range tdef.Cols {
+		found := false
+		for _, i := range req.Name {
+			if i == col {
+				found = true
+				break
+			}
+		}
+		if !found {
+			val := QLNode{}
+			val.Type = QL_SYM
+			val.Str = []byte(col)
+			req.Name = append(req.Name, col)
+			req.Values = append(req.Values, val)
+		}
+	}
+
+	for iterator.Valid() {
+		rec, err := iterator.Deref()
+		if err != nil {
+			return err
+		}
+		newrec, _ := qlEvalOutput(&rec, req.Values, req.Name)
+		reorderedRec := Record{}
+		for i, col := range tdef.Cols {
+			switch tdef.Types[i] {
+			case TYPE_INT64:
+				reorderedRec.AddI64(col, newrec.Get(col).I64)
+			case TYPE_BYTES:
+				reorderedRec.AddStr(col, newrec.Get(col).Str)
+			default:
+				return fmt.Errorf("invalid record type")
+			}
+		}
+		ok := tx.Update(req.Table, reorderedRec)
+		if !ok {
+			return fmt.Errorf("error updating the table")
+		}
+		iterator.Next()
+	}
+	return nil
 }
 
 func pSelect(p *Parser) *QLSelect {
@@ -1248,6 +1339,8 @@ func (iter *qlScanFilter) Deref() (Record, error) {
 	return iter.sc.rec, iter.sc.err
 }
 
+// qlEvalOutput computes the expresstion with the rec as context
+// outputs a record having the computed values,
 func qlEvalOutput(rec *Record, exprs []QLNode, names []string) (*Record, error) {
 	if names[0] == "*" {
 		return rec, nil

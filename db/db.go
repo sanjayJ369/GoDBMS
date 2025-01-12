@@ -566,7 +566,6 @@ func dbDel(db *DBTX, tdef *TableDef, rec Record) bool {
 			}
 		}
 	}
-
 	return db.kv.Del(key)
 }
 
@@ -581,7 +580,6 @@ func dbSet(db *DBTX, tdef *TableDef, rec Record) error {
 	// set the primay index
 	key := encodeKey(tdef.Prefixes[0], values[:tdef.Pkeys])
 	val := encodeVal(values[tdef.Pkeys:])
-
 	db.kv.Set(key, val)
 
 	// setting the secondary indexes
