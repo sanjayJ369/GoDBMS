@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 )
 
 const (
@@ -520,7 +521,7 @@ func (db *DBTX) Upsert(table string, rec Record) bool {
 	} else {
 		err := db.Insert(table, rec)
 		if err != nil {
-			fmt.Errorf("inserting record: %w", err)
+			log.Printf("inserting record: %s", err)
 			return false
 		}
 	}

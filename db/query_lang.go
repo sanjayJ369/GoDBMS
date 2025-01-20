@@ -49,7 +49,7 @@ var (
 	}
 )
 
-var KeyWords = []string{"create", "table", "select", "index", "by",
+var KeyWords = []string{"create", "table", "select", "index", "by", "upsert",
 	"insert", "filter", "into", "delete", "from", "update", ",",
 	"(", ")", "-", "as", "or", "and", "+", "*", "/", "%", ";",
 	">=", "<=", "==", "=", ">", "<", "offset", "limit", "primary", "key",
@@ -607,8 +607,10 @@ func pStmt(p *Parser) (r interface{}) {
 		r = pSelect(p)
 	case pkeyword(p, "insert", "into"):
 		r = pInsert(p)
-	// case pkeyword(p, "update"):
-	// 	r = pUpdate(p)
+	case pkeyword(p, "upsert", "into"):
+		r = pUpsert(p)
+	case pkeyword(p, "update"):
+		r = pUpdate(p)
 	case pkeyword(p, "delete"):
 		r = pDelete(p)
 	default:
@@ -820,6 +822,10 @@ func pCreateTable(p *Parser) *QLCreateTable {
 	}
 }
 
+func pUpsert(p *Parser) *QLInsert {
+	return pInsert(p)
+}
+
 func pInsert(p *Parser) *QLInsert {
 	stmt := QLInsert{}
 	// get table name
@@ -856,18 +862,18 @@ func pInsert(p *Parser) *QLInsert {
 
 func qlInsert(req *QLInsert, tx *DBTX) error {
 	rec := Record{}
-	// populate record with values
-	for i, val := range req.Values {
-		switch val.Type {
-		case TYPE_BYTES:
-			rec.AddStr(req.Name[i], val.Str)
-		case TYPE_INT64:
-			rec.AddI64(req.Name[i], val.I64)
-		default:
-			return fmt.Errorf("invalid type: %d", val.Type)
-		}
-	}
+	populateRecord(&rec, req.Values, req.Name)
 	return tx.Insert(req.Table, rec)
+}
+
+func qlUpsert(req *QLInsert, tx *DBTX) error {
+	rec := Record{}
+	populateRecord(&rec, req.Values, req.Name)
+	ok := tx.Upsert(req.Table, rec)
+	if !ok {
+		return fmt.Errorf("upserting record")
+	}
+	return nil
 }
 
 func pDelete(p *Parser) *QLDelete {
@@ -883,6 +889,10 @@ func pDelete(p *Parser) *QLDelete {
 	pScan(p, &stmt.QLScan)
 	if p.err != nil {
 		return nil
+	}
+
+	if !pkeyword(p, ";") {
+		pErr(p, nil, "invalid insert query syntax")
 	}
 	return &stmt
 }
@@ -1023,6 +1033,10 @@ func pSelect(p *Parser) *QLSelect {
 	pScan(p, &stmt.QLScan)
 	if p.err != nil {
 		return nil
+	}
+
+	if !pkeyword(p, ";") {
+		pErr(p, nil, "invalid insert query syntax")
 	}
 	return &stmt
 }
@@ -1471,4 +1485,19 @@ func getColsIndex(tdef *TableDef, cols ...string) (int, error) {
 		}
 		return -1, fmt.Errorf("there are no columsn having indexes: %v", cols)
 	}
+}
+
+func populateRecord(rec *Record, vals []QLNode, names []string) error {
+	// populate record with values
+	for i, val := range vals {
+		switch val.Type {
+		case TYPE_BYTES:
+			rec.AddStr(names[i], val.Str)
+		case TYPE_INT64:
+			rec.AddI64(names[i], val.I64)
+		default:
+			return fmt.Errorf("invalid type: %d", val.Type)
+		}
+	}
+	return nil
 }

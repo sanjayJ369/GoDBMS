@@ -474,7 +474,7 @@ func TestEvalFunctions(t *testing.T) {
 func TestPSelect(t *testing.T) {
 
 	t.Run("parsing select statement with 2 index by conditions", func(t *testing.T) {
-		expr := "select a as a1, b as a2 from demo index by a > 10 and a <= 30"
+		expr := "select a as a1, b as a2 from demo index by a > 10 and a <= 30;"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -497,7 +497,7 @@ func TestPSelect(t *testing.T) {
 	})
 
 	t.Run("parsing select statement with 1 index by conditions", func(t *testing.T) {
-		expr := "select a as a1, b as a2 from demo index by a == 10"
+		expr := "select a as a1, b as a2 from demo index by a == 10;"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -518,7 +518,7 @@ func TestPSelect(t *testing.T) {
 	})
 
 	t.Run("parsing select statement with no index by conditions(full table scan)", func(t *testing.T) {
-		expr := "select a as a1, b as a2 from demo"
+		expr := "select a as a1, b as a2 from demo;"
 		p := &Parser{
 			input: []byte(expr),
 		}
@@ -606,7 +606,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b from demo index by @a > 5 and @a < 8"
+		query := "select a, b from demo index by @a > 5 and @a < 8;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -630,7 +630,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b from demo index by @a == 6"
+		query := "select a, b from demo index by @a == 6;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -653,7 +653,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b from demo index by @a >= 6"
+		query := "select a, b from demo index by @a >= 6;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -676,7 +676,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b from demo index by @a >= 6 filter @c > 1 and @c < 6 and @b == 3"
+		query := "select a, b from demo index by @a >= 6 filter @c > 1 and @c < 6 and @b == 3;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -704,7 +704,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b from demo index by @id > 10 offset 5 limit 10"
+		query := "select a, b from demo index by @id > 10 offset 5 limit 10;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -731,7 +731,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b, c from demo"
+		query := "select a, b, c from demo;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -755,7 +755,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b, c from demo index by @a"
+		query := "select a, b, c from demo index by @a;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -781,7 +781,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select a, b, c from demo index by (@a, @b, @c) filter @a > 5 and @b >= 5 and @c == 4"
+		query := "select a, b, c from demo index by (@a, @b, @c) filter @a > 5 and @b >= 5 and @c == 4;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -806,7 +806,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select (@a + @b)  as APB, (@b - @c) as BMC from demo"
+		query := "select (@a + @b)  as APB, (@b - @c) as BMC from demo;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -833,7 +833,7 @@ func TestQLScan(t *testing.T) {
 		tx := database.NewTX()
 		database.Begin(tx)
 
-		query := "select * from demo"
+		query := "select * from demo;"
 		p := &Parser{
 			input: []byte(query),
 		}
@@ -1014,7 +1014,7 @@ func TestDeleteRecords(t *testing.T) {
 
 	t.Run("delete query deletes all records that match the condition", func(t *testing.T) {
 		// Parsing select query to get the records to be deleted
-		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6"
+		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6;"
 		selParser := &Parser{
 			input: []byte(selQuery),
 		}
@@ -1036,7 +1036,7 @@ func TestDeleteRecords(t *testing.T) {
 		}
 
 		// Deleting records
-		delQuery := "delete from demo index by a filter @a > 3 and @a < 6"
+		delQuery := "delete from demo index by a filter @a > 3 and @a < 6;"
 		delParser := &Parser{
 			input: []byte(delQuery),
 		}
@@ -1078,7 +1078,7 @@ func TestUpdateRecords(t *testing.T) {
 
 	t.Run("update query updates all records that match the condition", func(t *testing.T) {
 		// Parsing select query to get the records to be updated
-		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6"
+		selQuery := "select * from demo index by @a filter @a > 3 and @a < 6;"
 		tx := database.NewTX()
 		database.Begin(tx)
 
@@ -1091,7 +1091,7 @@ func TestUpdateRecords(t *testing.T) {
 		}
 
 		// updating records
-		updateQuery := "update demo set @b = @c + @a index by a filter @a > 3 and @a < 6"
+		updateQuery := "update demo set @b = @c + @a index by a filter @a > 3 and @a < 6;"
 		updateParser := &Parser{
 			input: []byte(updateQuery),
 		}
@@ -1118,6 +1118,66 @@ func TestUpdateRecords(t *testing.T) {
 			assert.Equal(t, rec.Get("c").I64, newRec.Get("c").I64)
 			assert.Equal(t, rec.Get("a").I64+rec.Get("c").I64, newRec.Get("b").I64)
 		}
+	})
+}
+
+func TestUpsertRecord(t *testing.T) {
+	// create new temp DB and insert table defination
+	tdef := &TableDef{
+		Name:    "demo",
+		Cols:    []string{"id", "a", "b"},
+		Types:   []uint32{TYPE_INT64, TYPE_INT64, TYPE_BYTES},
+		Pkeys:   1,
+		Indexes: [][]string{{"id"}, {"a"}, {"b"}},
+	}
+
+	// creating db instance
+	db, clear := createTempDB()
+	defer clear()
+	tx := db.NewTX()
+	db.Begin(tx)
+	err := tx.TableNew(tdef)
+	assert.NoError(t, err)
+
+	t.Run("upsert inserts new record when record doesn't exist", func(t *testing.T) {
+		query := "upsert into demo (id, a, b) values (1, 10, abcd);"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "upsert", "into")
+		res := pUpsert(p)
+		assert.NoError(t, p.err)
+		err := qlUpsert(res, tx)
+		assert.NoError(t, err)
+
+		got := Record{}
+		got.AddI64("id", 1)
+		_, err = tx.Get("demo", &got)
+		assert.NoError(t, err)
+
+		assert.Equal(t, int64(10), got.Get("a").I64)
+		assert.Equal(t, "abcd", string(got.Get("b").Str))
+	})
+
+	t.Run("upsert updates existing record when record exists", func(t *testing.T) {
+
+		query := "upsert into demo (id, a, b) values (1, 20, updated);"
+		p := &Parser{
+			input: []byte(query),
+		}
+		pkeyword(p, "upsert", "into")
+		res := pUpsert(p)
+		assert.NoError(t, p.err)
+		err := qlUpsert(res, tx)
+		assert.NoError(t, err)
+
+		got := Record{}
+		got.AddI64("id", 1)
+		_, err = tx.Get("demo", &got)
+		assert.NoError(t, err)
+
+		assert.Equal(t, int64(20), got.Get("a").I64)
+		assert.Equal(t, "updated", string(got.Get("b").Str))
 	})
 }
 
