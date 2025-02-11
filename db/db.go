@@ -76,6 +76,18 @@ func (r *Record) Get(col string) *Value {
 	return nil
 }
 
+func (r *Record) ToString() []string {
+	res := []string{}
+	for _, val := range r.Vals {
+		if val.Type == TYPE_BYTES {
+			res = append(res, string(val.Str))
+		} else {
+			res = append(res, fmt.Sprintf("%d", val.I64))
+		}
+	}
+	return res
+}
+
 // TableDef struct is used the table definations
 // tables are defined in such a way that the first
 // PKeys columns are the primary keys

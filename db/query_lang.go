@@ -598,6 +598,52 @@ func qlCreateTable(req *QLCreateTable, tx *DBTX) error {
 	return tx.TableNew(&req.Def)
 }
 
+// qlStmt takes a parser and result from pstmt to
+// to execute the statement
+func qlStmt(p *Parser, r interface{}, tx *DBTX) (res interface{}, err error) {
+
+	switch val := r.(type) {
+	case *QLCreateTable:
+		err = qlCreateTable(val, tx)
+	case *QLSelect:
+		sc, err := qlSelect(val, tx)
+		if err != nil {
+			return nil, err
+		}
+		res := []Record{}
+		for sc.Valid() {
+			rec, err := sc.Deref()
+			if err != nil {
+				return nil, err
+			}
+			res = append(res, *rec)
+			sc.Next()
+		}
+		return res, nil
+
+	case *QLUpdate:
+		err = qlUpdate(val, tx)
+
+	case *QLInsert:
+		if pkeyword(p, "upsert", "into") {
+			err = qlUpsert(val, tx)
+		} else {
+			err = qlInsert(val, tx)
+		}
+
+	case *QLDelete:
+		res, err = qlDelete(val, tx)
+
+	default:
+		return nil, fmt.Errorf("invalid result type: %v", val)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // pStmt parsers the statement
 func pStmt(p *Parser) (r interface{}) {
 	switch {
@@ -614,7 +660,8 @@ func pStmt(p *Parser) (r interface{}) {
 	case pkeyword(p, "delete"):
 		r = pDelete(p)
 	default:
-		panic(fmt.Sprintf("invalid query statement: %s", string(p.input)))
+		fmt.Println("invalid query statement: ", string(p.input))
+		r = nil
 	}
 	return r
 }
